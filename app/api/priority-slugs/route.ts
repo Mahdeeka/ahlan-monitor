@@ -20,12 +20,52 @@ import type { Event } from "@/lib/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/** Pick the freshest snapshot across all three reader paths.
+ *  Serverless connection-pool isolation can serve stale data through one
+ *  client even when another sees the latest write — pick the result with
+ *  the most recent updated_at to dodge it. */
+async function readAllEvents(): Promise<Event[]> {
+  type Row = { slug: string; data: any; updated_at: number };
+  const tries: Array<{ name: string; rows: Row[] }> = [];
+
+  try {
+    const { sql } = await import("@vercel/postgres");
+    const r = await sql`SELECT slug, data, updated_at FROM events_latest`;
+    tries.push({ name: "dynamic_sql", rows: r.rows as Row[] });
+  } catch {/* */}
+  try {
+    const dbMod = await import("@/lib/db");
+    const r = await dbMod.getLatestEvents();
+    tries.push({
+      name: "lib_db",
+      rows: r.events.map((e: any) => ({ slug: e.slug, data: e, updated_at: r.updated_at })),
+    });
+  } catch {/* */}
+  try {
+    const vpg = await import("@vercel/postgres");
+    const client = vpg.createClient();
+    await client.connect();
+    try {
+      const r = await client.sql`SELECT slug, data, updated_at FROM events_latest`;
+      tries.push({ name: "raw_client", rows: r.rows as Row[] });
+    } finally { await client.end(); }
+  } catch {/* */}
+
+  // Pick the result with most rows AND highest max updated_at
+  let best: Row[] = [];
+  let bestScore = -1;
+  for (const t of tries) {
+    if (t.rows.length === 0) continue;
+    const maxUpd = Math.max(...t.rows.map(r => r.updated_at || 0));
+    // Score = (row count) * 1e10 + maxUpd (rows dominate, freshness breaks ties)
+    const score = t.rows.length * 1e10 + maxUpd;
+    if (score > bestScore) { bestScore = score; best = t.rows; }
+  }
+  return best.map(r => (typeof r.data === "string" ? JSON.parse(r.data) : (r.data as Event)));
+}
+
 export async function GET() {
-  const { sql } = await import("@vercel/postgres");
-  const rows = await sql`SELECT slug, data FROM events_latest`;
-  const events: Event[] = rows.rows.map(r =>
-    typeof r.data === "string" ? JSON.parse(r.data) : (r.data as Event)
-  );
+  const events = await readAllEvents();
 
   const priority: Array<{ slug: string; reasons: string[]; pct_sold: number; urgency: string }> = [];
   for (const ev of events) {
