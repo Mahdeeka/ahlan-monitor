@@ -36,17 +36,17 @@ jobs:
       - name: Install dependencies
         run: pip install -q -r scripts/requirements.txt
 
-      - name: Poll loop (10 passes ≈ every 30s for 5 minutes)
+      - name: Poll loop (8 passes ≈ every 30s for ~4 minutes)
         env:
           VERCEL_URL: ${{ secrets.VERCEL_URL }}
           SNAPSHOT_SECRET: ${{ secrets.SNAPSHOT_SECRET }}
           WEBSHARE_PROXIES: ${{ secrets.WEBSHARE_PROXIES }}
         run: |
           set +e
-          for i in 1 2 3 4 5 6 7 8 9 10; do
+          for i in 1 2 3 4 5 6 7 8; do
             echo "::group::Poll #$i"
             python scripts/poll.py
             echo "::endgroup::"
-            if [ "$i" -lt 10 ]; then sleep 28; fi
+            if [ "$i" -lt 8 ]; then sleep 25; fi
           done
           exit 0
