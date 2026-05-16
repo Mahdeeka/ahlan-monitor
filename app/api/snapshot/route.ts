@@ -118,11 +118,14 @@ export async function POST(req: Request) {
     await recordChange(ts, ch.slug, ch.title, ch.type, ch.details);
   }
 
-  // Record this scrape pass for the monitoring page
-  const source = (typeof body?.source === "string" && body.source) ||
-                 (req.headers.get("user-agent") || "").includes("GitHub")
-                   ? "github-actions"
-                   : "external";
+  // Record this scrape pass for the monitoring page.
+  // Body-provided source takes precedence (so poll.py can tag "github-actions-priority"
+  // vs "github-actions-all"). Fall back to UA-based detection.
+  const bodySource = (typeof body?.source === "string" && body.source) ? body.source : null;
+  const source = bodySource ||
+    ((req.headers.get("user-agent") || "").includes("GitHub")
+       ? "github-actions"
+       : "external");
   try {
     await recordScrapeRun({
       ts, source,
