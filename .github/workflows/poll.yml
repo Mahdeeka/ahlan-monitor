@@ -31,9 +31,10 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
+          cache-dependency-path: scripts/requirements.txt
 
       - name: Install dependencies
-        run: pip install -q requests
+        run: pip install -q -r scripts/requirements.txt
 
       - name: Poll loop (10 passes ≈ every 30s for 5 minutes)
         env:
