@@ -1,11 +1,14 @@
 /**
  * AFC Asian Cup 2027 team registry.
  *
- * `strength` is an Elo-like 0-100 rating derived from FIFA rankings, AFC
- * coefficients, and recent Asian Cup form. It's used only to estimate group-
- * stage finish probabilities for the knockout matchup forecaster.
+ * `elo` is a football Elo rating (eloratings.net style, baseline 1500).
+ * Used by the per-match Monte Carlo to compute realistic W/D/L probabilities
+ * and predict group standings + knockout matchups.
  *
- * Group composition was reverse-engineered from the published 36 group-stage
+ * `isHost` = true → gets the host nation home-advantage boost (+60 Elo on
+ * top of base rating, applied at match time).
+ *
+ * Group composition was reverse-engineered from the 36 published group-stage
  * fixtures on ahlan.sa (see eventList -> match titles).
  */
 
@@ -16,46 +19,47 @@ export type Team = {
   name: string;          // Display name
   flag: string;          // Emoji
   fifaRank: number | null;
-  strength: number;      // 0-100, used for probability model
+  elo: number;           // Real football Elo (~1200–1850 range)
   group: GroupId;
+  isHost?: boolean;
 };
 
 export const TEAMS: Team[] = [
-  // Group A — Riyadh/Mecca cluster
-  { code: "KSA", name: "Saudi Arabia",    flag: "🇸🇦", fifaRank: 58,  strength: 72, group: "A" },
-  { code: "PLS", name: "Palestine",       flag: "🇵🇸", fifaRank: 95,  strength: 48, group: "A" },
-  { code: "OMA", name: "Oman",            flag: "🇴🇲", fifaRank: 76,  strength: 56, group: "A" },
-  { code: "KUW", name: "Kuwait",          flag: "🇰🇼", fifaRank: 138, strength: 38, group: "A" },
+  // ── Group A ─────────────────────────────────────────────────────────────
+  { code: "KSA", name: "Saudi Arabia",          flag: "🇸🇦", fifaRank: 58,  elo: 1580, group: "A", isHost: true },
+  { code: "PLS", name: "Palestine",             flag: "🇵🇸", fifaRank: 95,  elo: 1380, group: "A" },
+  { code: "OMA", name: "Oman",                  flag: "🇴🇲", fifaRank: 76,  elo: 1500, group: "A" },
+  { code: "KUW", name: "Kuwait",                flag: "🇰🇼", fifaRank: 138, elo: 1350, group: "A" },
 
-  // Group B
-  { code: "BHR", name: "Bahrain",         flag: "🇧🇭", fifaRank: 80,  strength: 54, group: "B" },
-  { code: "PRK", name: "DPR Korea",       flag: "🇰🇵", fifaRank: 120, strength: 44, group: "B" },
-  { code: "UZB", name: "Uzbekistan",      flag: "🇺🇿", fifaRank: 57,  strength: 70, group: "B" },
-  { code: "JOR", name: "Jordan",          flag: "🇯🇴", fifaRank: 70,  strength: 65, group: "B" },
+  // ── Group B ─────────────────────────────────────────────────────────────
+  { code: "BHR", name: "Bahrain",               flag: "🇧🇭", fifaRank: 80,  elo: 1500, group: "B" },
+  { code: "PRK", name: "DPR Korea",             flag: "🇰🇵", fifaRank: 120, elo: 1350, group: "B" },
+  { code: "UZB", name: "Uzbekistan",            flag: "🇺🇿", fifaRank: 57,  elo: 1610, group: "B" },
+  { code: "JOR", name: "Jordan",                flag: "🇯🇴", fifaRank: 70,  elo: 1600, group: "B" }, // 2023 finalists
 
-  // Group C
-  { code: "SYR", name: "Syria",           flag: "🇸🇾", fifaRank: 94,  strength: 50, group: "C" },
-  { code: "KGZ", name: "Kyrgyz Republic", flag: "🇰🇬", fifaRank: 100, strength: 43, group: "C" },
-  { code: "IRN", name: "Iran",            flag: "🇮🇷", fifaRank: 21,  strength: 88, group: "C" },
-  { code: "CHN", name: "China PR",        flag: "🇨🇳", fifaRank: 88,  strength: 52, group: "C" },
+  // ── Group C ─────────────────────────────────────────────────────────────
+  { code: "SYR", name: "Syria",                 flag: "🇸🇾", fifaRank: 94,  elo: 1490, group: "C" },
+  { code: "KGZ", name: "Kyrgyz Republic",       flag: "🇰🇬", fifaRank: 100, elo: 1400, group: "C" },
+  { code: "IRN", name: "Iran",                  flag: "🇮🇷", fifaRank: 21,  elo: 1750, group: "C" },
+  { code: "CHN", name: "China PR",              flag: "🇨🇳", fifaRank: 88,  elo: 1480, group: "C" },
 
-  // Group D
-  { code: "AUS", name: "Australia",       flag: "🇦🇺", fifaRank: 25,  strength: 86, group: "D" },
-  { code: "SGP", name: "Singapore",       flag: "🇸🇬", fifaRank: 157, strength: 32, group: "D" },
-  { code: "TJK", name: "Tajikistan",      flag: "🇹🇯", fifaRank: 107, strength: 45, group: "D" },
-  { code: "IRQ", name: "Iraq",            flag: "🇮🇶", fifaRank: 58,  strength: 73, group: "D" },
+  // ── Group D ─────────────────────────────────────────────────────────────
+  { code: "AUS", name: "Australia",             flag: "🇦🇺", fifaRank: 25,  elo: 1740, group: "D" },
+  { code: "SGP", name: "Singapore",             flag: "🇸🇬", fifaRank: 157, elo: 1300, group: "D" },
+  { code: "TJK", name: "Tajikistan",            flag: "🇹🇯", fifaRank: 107, elo: 1430, group: "D" }, // 2023 QF
+  { code: "IRQ", name: "Iraq",                  flag: "🇮🇶", fifaRank: 58,  elo: 1605, group: "D" },
 
-  // Group E
-  { code: "KOR", name: "Korea Republic",  flag: "🇰🇷", fifaRank: 22,  strength: 87, group: "E" },
-  { code: "TBD", name: "Lebanon / Yemen", flag: "🇱🇧", fifaRank: 110, strength: 42, group: "E" },
-  { code: "UAE", name: "United Arab Emirates", flag: "🇦🇪", fifaRank: 63, strength: 67, group: "E" },
-  { code: "VIE", name: "Vietnam",         flag: "🇻🇳", fifaRank: 115, strength: 47, group: "E" },
+  // ── Group E ─────────────────────────────────────────────────────────────
+  { code: "KOR", name: "Korea Republic",        flag: "🇰🇷", fifaRank: 22,  elo: 1770, group: "E" },
+  { code: "TBD", name: "Lebanon / Yemen",       flag: "🇱🇧", fifaRank: 110, elo: 1380, group: "E" },
+  { code: "UAE", name: "United Arab Emirates",  flag: "🇦🇪", fifaRank: 63,  elo: 1580, group: "E" },
+  { code: "VIE", name: "Vietnam",               flag: "🇻🇳", fifaRank: 115, elo: 1430, group: "E" },
 
-  // Group F
-  { code: "QAT", name: "Qatar",           flag: "🇶🇦", fifaRank: 37,  strength: 80, group: "F" },
-  { code: "THA", name: "Thailand",        flag: "🇹🇭", fifaRank: 95,  strength: 48, group: "F" },
-  { code: "JPN", name: "Japan",           flag: "🇯🇵", fifaRank: 17,  strength: 92, group: "F" },
-  { code: "IDN", name: "Indonesia",       flag: "🇮🇩", fifaRank: 126, strength: 41, group: "F" },
+  // ── Group F ─────────────────────────────────────────────────────────────
+  { code: "QAT", name: "Qatar",                 flag: "🇶🇦", fifaRank: 37,  elo: 1660, group: "F" }, // back-to-back champ
+  { code: "THA", name: "Thailand",              flag: "🇹🇭", fifaRank: 95,  elo: 1450, group: "F" },
+  { code: "JPN", name: "Japan",                 flag: "🇯🇵", fifaRank: 17,  elo: 1820, group: "F" },
+  { code: "IDN", name: "Indonesia",             flag: "🇮🇩", fifaRank: 126, elo: 1430, group: "F" }, // sharp rise
 ];
 
 /** Look up a team by its 3-letter code (case-insensitive). */
@@ -64,9 +68,9 @@ export function teamByCode(code: string): Team | undefined {
   return TEAMS.find(t => t.code === upper);
 }
 
-/** All teams in a group, sorted by strength (strongest first). */
+/** All teams in a group, sorted by Elo (strongest first). */
 export function groupTeams(group: GroupId): Team[] {
-  return TEAMS.filter(t => t.group === group).sort((a, b) => b.strength - a.strength);
+  return TEAMS.filter(t => t.group === group).sort((a, b) => b.elo - a.elo);
 }
 
 /** All groups present in the tournament. */

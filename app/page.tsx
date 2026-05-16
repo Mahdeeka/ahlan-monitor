@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import {
   Bell, BellOff, X, Search, ExternalLink, TrendingUp,
-  TrendingDown, Activity, AlertCircle, Sparkles, Filter
+  TrendingDown, Activity, AlertCircle, Sparkles, Filter, Crown,
 } from "lucide-react";
 import type { Event, StateSnapshot, Subscription, Change, ChangeType } from "@/lib/types";
 import { EventCard } from "@/components/EventCard";
@@ -49,6 +49,17 @@ export default function Page() {
       if (typeof Notification !== "undefined") setBrowserPerm(Notification.permission);
     } catch { /* ignore */ }
   }, []);
+
+  /* ────────── Deep-link support (?open=<slug>) ────────── */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const openSlug = params.get("open");
+    if (openSlug && state?.events) {
+      const ev = state.events.find(e => e.slug === openSlug);
+      if (ev) setDetail(ev);
+    }
+  }, [state]);
 
   const saveSubs = useCallback((subs: Record<string, Subscription>) => {
     setSubscriptions(subs);
@@ -265,6 +276,14 @@ export default function Page() {
           </div>
           <div className="hidden sm:block flex-1" />
           <div className="flex items-center gap-2 sm:gap-3 text-xs sm:text-sm ml-auto">
+            <Link
+              href="/forecast"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium bg-yellow-500/10 text-yellow-300 border border-yellow-500/30 hover:bg-yellow-500/20 transition-colors flex items-center gap-1.5"
+              title="Tournament forecast"
+            >
+              <Crown className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Forecast</span>
+            </Link>
             <Link
               href="/scrape-status"
               className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700/40 text-slate-300 border border-slate-600/30 hover:bg-slate-700/60 transition-colors flex items-center gap-1.5"

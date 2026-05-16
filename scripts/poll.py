@@ -41,28 +41,110 @@ if not VERCEL_URL:
     sys.exit(1)
 
 # Parse Webshare proxies: lines of "host:port:user:pass"
-PROXIES: list[str] = []
+ALL_PROXIES: list[str] = []
 if PROXIES_RAW:
     for raw in PROXIES_RAW.replace(",", "\n").splitlines():
-        raw = raw.strip()
+        raw = raw.strip().lstrip("﻿")  # strip BOM if any
         if not raw or raw.startswith("#"):
             continue
         try:
             h, p, u, pw = raw.split(":")
-            PROXIES.append(f"http://{u}:{pw}@{h}:{p}")
+            ALL_PROXIES.append(f"http://{u}:{pw}@{h}:{p}")
         except ValueError:
             print(f"  ⚠ skipping malformed proxy line: {raw[:40]}")
-if PROXIES:
-    print(f"🔌 Loaded {len(PROXIES)} Webshare proxies for ahlan.sa rotation")
-else:
-    print("⚠ No WEBSHARE_PROXIES configured — going direct (likely to get 429)")
+
+# Working pool — populated by pre-warm step. Bad proxies get removed on
+# 402/407/timeout/connection-refused during scraping.
+HEALTHY_PROXIES: list[str] = list(ALL_PROXIES)
+PROXY_FAILURES: dict[str, int] = {p: 0 for p in ALL_PROXIES}
+PROXY_KILL_THRESHOLD = 2   # after this many consecutive failures, blacklist
+PROXY_FATAL_CODES = {402, 407}  # auth / payment-required = whole proxy dead
+
+
+def _label(p: str) -> str:
+    """Extract host:port for log clarity (don't log creds)."""
+    try:
+        # http://user:pass@host:port
+        return p.split("@")[-1]
+    except Exception:
+        return p
 
 
 def pick_proxy():
-    if not PROXIES:
+    """Pick a healthy proxy at random. Returns None if none healthy."""
+    if not HEALTHY_PROXIES:
         return None
-    p = random.choice(PROXIES)
+    p = random.choice(HEALTHY_PROXIES)
     return {"http": p, "https": p}
+
+
+def mark_proxy_bad(proxy_url: str, reason: str, fatal: bool = False):
+    """Record a proxy failure. Blacklist after threshold (or instantly if fatal)."""
+    if proxy_url not in PROXY_FAILURES:
+        return
+    PROXY_FAILURES[proxy_url] += 1
+    if fatal or PROXY_FAILURES[proxy_url] >= PROXY_KILL_THRESHOLD:
+        if proxy_url in HEALTHY_PROXIES:
+            HEALTHY_PROXIES.remove(proxy_url)
+            tag = "FATAL" if fatal else f"{PROXY_FAILURES[proxy_url]}× fails"
+            print(f"  🚫 blacklisting {_label(proxy_url)} ({tag} — {reason[:60]})")
+
+
+def mark_proxy_ok(proxy_url: str):
+    """Reset failure counter on success."""
+    if proxy_url in PROXY_FAILURES:
+        PROXY_FAILURES[proxy_url] = 0
+
+
+def prewarm_proxies():
+    """Quick parallel ping of all proxies — keep only ones returning 200 from a tiny endpoint.
+    Falls back to ALL_PROXIES if every test fails (so we still try during the main run)."""
+    if not ALL_PROXIES:
+        print("⚠ No WEBSHARE_PROXIES configured — going direct (likely to get 429 from ahlan.sa)")
+        return
+    # Try ahlan.sa root with a cheap HEAD-ish GET. We use ahlan.sa specifically
+    # because some proxies whitelist by destination — a generic httpbin test
+    # might pass while ahlan.sa still blocks.
+    test_url = "https://www.ahlan.sa/"
+    print(f"🔌 Pre-warming {len(ALL_PROXIES)} proxies against {test_url} ...")
+
+    def _test(proxy_url: str) -> tuple[str, str]:
+        try:
+            r = requests.get(test_url, headers=HEADERS,
+                             proxies={"http": proxy_url, "https": proxy_url},
+                             timeout=8, allow_redirects=False)
+            if r.status_code in (200, 301, 302, 304, 403):  # 403 = ahlan WAF says no but proxy works
+                return (proxy_url, f"OK {r.status_code}")
+            if r.status_code in PROXY_FATAL_CODES:
+                return (proxy_url, f"FATAL {r.status_code}")
+            return (proxy_url, f"HTTP {r.status_code}")
+        except requests.exceptions.ProxyError as e:
+            msg = str(e)
+            if "402" in msg: return (proxy_url, "FATAL 402 bandwidth")
+            if "407" in msg: return (proxy_url, "FATAL 407 auth")
+            return (proxy_url, f"proxy_err: {msg[:50]}")
+        except Exception as e:
+            return (proxy_url, f"err: {type(e).__name__}")
+
+    healthy: list[str] = []
+    with ThreadPoolExecutor(max_workers=min(len(ALL_PROXIES), 10)) as ex:
+        for proxy_url, status in ex.map(_test, ALL_PROXIES):
+            if status.startswith("OK"):
+                healthy.append(proxy_url)
+                print(f"   ✓ {_label(proxy_url):26}  {status}")
+            else:
+                fatal = status.startswith("FATAL")
+                tag = "🚫" if fatal else "✗"
+                print(f"   {tag} {_label(proxy_url):26}  {status}")
+
+    HEALTHY_PROXIES.clear()
+    if healthy:
+        HEALTHY_PROXIES.extend(healthy)
+        print(f"🎯 Using {len(HEALTHY_PROXIES)} / {len(ALL_PROXIES)} healthy proxies for this run")
+    else:
+        # All failed — fall back to trying ALL_PROXIES during scraping anyway
+        HEALTHY_PROXIES.extend(ALL_PROXIES)
+        print(f"⚠ Pre-warm: zero working proxies! Will still try all {len(ALL_PROXIES)} during scrape.")
 
 # Fallback slugs if discovery fails (canonical 51 events verified via eventList API)
 FALLBACK_SLUGS = [
@@ -165,33 +247,71 @@ def normalize(slug: str, data: dict) -> dict:
     }
 
 
-def fetch_with_retry(url: str, max_attempts: int = 4, timeout: int = 20):
-    """Fetch ahlan.sa via a random Webshare proxy; rotate on 429/error."""
+def fetch_with_retry(url: str, max_attempts: int = 5, timeout: int = 15):
+    """Fetch ahlan.sa via a healthy Webshare proxy; rotate on every retry.
+
+    Marks bad proxies for the rest of this run so we don't waste time on
+    them. If all proxies become bad mid-run, gives up cleanly.
+    """
     last_err = "no attempt"
+    used: set[str] = set()
     for attempt in range(1, max_attempts + 1):
-        proxies = pick_proxy()
+        if not HEALTHY_PROXIES:
+            return {"_error": "no healthy proxies"}
+        # Prefer proxies not yet tried this fetch
+        candidates = [p for p in HEALTHY_PROXIES if p not in used] or HEALTHY_PROXIES
+        proxy_url = random.choice(candidates)
+        used.add(proxy_url)
+        proxies = {"http": proxy_url, "https": proxy_url}
         try:
             r = requests.get(url, headers=HEADERS, proxies=proxies, timeout=timeout)
             if r.status_code == 429:
                 last_err = "HTTP 429"
+                # Not necessarily proxy fault — could be ahlan.sa rate-limiting
+                # the proxy IP. Mark a soft failure.
+                mark_proxy_bad(proxy_url, "HTTP 429", fatal=False)
                 if attempt < max_attempts:
-                    time.sleep(1 + attempt)
+                    time.sleep(0.5 + attempt * 0.5)
                     continue
                 return {"_error": last_err}
             if r.status_code == 404:
-                # Slug doesn't exist (event not yet published) — don't keep retrying
+                # Slug really doesn't exist — proxy is fine
+                mark_proxy_ok(proxy_url)
                 return {"_error": "HTTP 404"}
+            if r.status_code in PROXY_FATAL_CODES:
+                # 402 (bandwidth), 407 (auth) — proxy is dead for the run
+                mark_proxy_bad(proxy_url, f"HTTP {r.status_code}", fatal=True)
+                last_err = f"HTTP {r.status_code}"
+                if attempt < max_attempts: continue
+                return {"_error": last_err}
             if not r.ok:
                 last_err = f"HTTP {r.status_code}"
+                mark_proxy_bad(proxy_url, last_err, fatal=False)
                 if attempt < max_attempts:
-                    time.sleep(1)
+                    time.sleep(0.5)
                     continue
                 return {"_error": last_err}
+            # Success!
+            mark_proxy_ok(proxy_url)
             return r.json()
+        except requests.exceptions.ProxyError as e:
+            msg = str(e)[:120]
+            last_err = msg
+            # Fatal proxy errors: 402/407, "unable to connect"
+            fatal = "402" in msg or "407" in msg or "Unable to connect" in msg
+            mark_proxy_bad(proxy_url, msg, fatal=fatal)
+            if attempt < max_attempts: continue
+            return {"_error": last_err}
+        except requests.exceptions.Timeout:
+            last_err = "timeout"
+            mark_proxy_bad(proxy_url, "timeout", fatal=False)
+            if attempt < max_attempts: continue
+            return {"_error": last_err}
         except Exception as e:
             last_err = str(e)[:120]
+            mark_proxy_bad(proxy_url, last_err, fatal=False)
             if attempt < max_attempts:
-                time.sleep(1)
+                time.sleep(0.5)
                 continue
             return {"_error": last_err}
     return {"_error": last_err}
@@ -266,6 +386,9 @@ def main():
 
     t0 = time.time()
     print(f"📡 Poll started at {time.strftime('%H:%M:%S UTC', time.gmtime())}  mode={mode}")
+
+    # Pre-warm proxies (parallel ping, only use ones that respond)
+    prewarm_proxies()
 
     if mode == "priority":
         slugs = fetch_priority_slugs()
