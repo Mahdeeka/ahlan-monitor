@@ -42,30 +42,70 @@ export async function GET(req: Request) {
   let updated_at = 0;
   let from_db = false;
 
-  // Try DB first — use raw inline SQL (avoid library wrapper that's returning empty)
+  // Read events_latest. We try multiple paths because of an observed
+  // @vercel/postgres + Neon serverless pool isolation quirk where different
+  // call sites in the same request see different row counts. We pick whichever
+  // path returns the most rows.
   const hasDbEnv = !!(process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL);
   if (hasDbEnv) {
-    try {
-      const { sql } = await import("@vercel/postgres");
-      const result = await sql`
-        SELECT data, updated_at FROM events_latest
-        ORDER BY updated_at DESC
-      `;
-      const rows = result.rows;
-      events = rows.map(r => {
-        // JSONB may come back as string or object depending on driver version
-        return typeof r.data === "string" ? JSON.parse(r.data) : r.data;
-      });
-      updated_at = rows.length ? Math.max(...rows.map(r => (r.updated_at as number) || 0)) : 0;
-      from_db = events.length > 0;
-      debugInfo.db_events_count = events.length;
-      debugInfo.db_updated_at = updated_at;
-      debugInfo.raw_first_row_keys = rows[0] ? Object.keys(rows[0]) : null;
-      debugInfo.raw_first_data_type = rows[0] ? typeof rows[0].data : null;
-    } catch (e: any) {
-      debugInfo.db_error = String(e);
-      console.error("DB read failed:", e);
+    type Row = { slug?: string; data: any; updated_at: number };
+    const readers: Array<{ name: string; fn: () => Promise<Row[]> }> = [
+      {
+        name: "dynamic_import_sql",
+        fn: async () => {
+          const { sql } = await import("@vercel/postgres");
+          const r = await sql`SELECT slug, data, updated_at FROM events_latest ORDER BY updated_at DESC`;
+          return r.rows as Row[];
+        },
+      },
+      {
+        name: "lib_db_getLatestEvents",
+        fn: async () => {
+          const mod = await import("@/lib/db");
+          const r = await mod.getLatestEvents();
+          return r.events.map((e: any) => ({ slug: e.slug, data: e, updated_at: r.updated_at }));
+        },
+      },
+      {
+        name: "raw_pg_pool",
+        fn: async () => {
+          // Third path: import @vercel/postgres directly via createClient
+          const vpg = await import("@vercel/postgres");
+          const client = vpg.createClient();
+          await client.connect();
+          try {
+            const r = await client.sql`SELECT slug, data, updated_at FROM events_latest ORDER BY updated_at DESC`;
+            return r.rows as Row[];
+          } finally {
+            await client.end();
+          }
+        },
+      },
+    ];
+
+    const attempts: Array<{ name: string; count: number; sample?: any; error?: string }> = [];
+    let bestRows: Row[] = [];
+    let bestName = "";
+    for (const r of readers) {
+      try {
+        const rows = await r.fn();
+        attempts.push({ name: r.name, count: rows.length, sample: rows.slice(0, 2).map(x => x.slug) });
+        if (rows.length > bestRows.length) {
+          bestRows = rows;
+          bestName = r.name;
+        }
+      } catch (e: any) {
+        attempts.push({ name: r.name, count: -1, error: String(e).slice(0, 200) });
+      }
     }
+    debugInfo.read_attempts = attempts;
+    debugInfo.winning_reader = bestName;
+
+    events = bestRows.map(r => (typeof r.data === "string" ? JSON.parse(r.data) : r.data));
+    updated_at = bestRows.length ? Math.max(...bestRows.map(r => (r.updated_at as number) || 0)) : 0;
+    from_db = events.length > 0;
+    debugInfo.db_events_count = events.length;
+    debugInfo.db_updated_at = updated_at;
   }
 
   // Fallback to live fetch only if DB has truly NOTHING
