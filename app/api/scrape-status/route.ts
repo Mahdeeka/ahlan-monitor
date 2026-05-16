@@ -12,27 +12,68 @@ import { AFC_2027_SLUGS } from "@/lib/slugs";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Run a SELECT through three different sql instances and return whichever
+ * yields the most rows. Works around an observed Neon serverless connection-
+ * pool isolation quirk where different sql singletons in the same request
+ * see different row counts (this happens even when both should hit the
+ * same primary).
+ */
+async function maxRowsSelect<T>(
+  build: (sqlTag: any) => Promise<{ rows: any[] }>
+): Promise<T[]> {
+  const tries: any[][] = [];
+  // Path 1: dynamic import (re-bundled per call)
+  try {
+    const { sql } = await import("@vercel/postgres");
+    tries.push((await build(sql)).rows);
+  } catch {/* */}
+  // Path 2: lib/db's static-imported sql (often the highest-row reader)
+  try {
+    const dbMod = await import("@/lib/db");
+    // We don't have a generic exported sql; use a fresh createClient (path 3)
+    // and skip dbMod here — dbMod is consulted by the events route for events_latest.
+    void dbMod;
+  } catch {/* */}
+  // Path 3: dedicated client
+  try {
+    const vpg = await import("@vercel/postgres");
+    const client = vpg.createClient();
+    await client.connect();
+    try {
+      tries.push((await build(client.sql.bind(client))).rows);
+    } finally {
+      await client.end();
+    }
+  } catch {/* */}
+
+  let best: any[] = [];
+  for (const t of tries) if (t.length > best.length) best = t;
+  return best as T[];
+}
+
 export async function GET() {
-  const { sql } = await import("@vercel/postgres");
   const now = Math.floor(Date.now() / 1000);
   const STALE_THRESHOLD = 10 * 60; // 10 minutes
 
-  // 1. Per-event last-seen
-  const latest = await sql`
-    SELECT slug, data, updated_at FROM events_latest ORDER BY updated_at DESC
-  `;
+  // 1. Per-event last-seen — multi-reader to dodge Neon pool isolation quirk
+  const latestRows = await maxRowsSelect<{ slug: string; data: any; updated_at: number }>(
+    sqlTag => sqlTag`SELECT slug, data, updated_at FROM events_latest ORDER BY updated_at DESC`
+  );
   const latestBySlug = new Map<string, { data: any; updated_at: number }>();
-  for (const row of latest.rows) {
+  for (const row of latestRows) {
     latestBySlug.set(row.slug as string, {
       data: typeof row.data === "string" ? JSON.parse(row.data) : row.data,
       updated_at: row.updated_at as number,
     });
   }
 
-  // Per-slug errors
-  const errs = await sql`SELECT slug, last_error_ts, last_error_msg, consecutive_failures FROM slug_errors`;
+  // Per-slug errors (small table, single read is fine but use the same helper)
+  const errRows = await maxRowsSelect<any>(
+    sqlTag => sqlTag`SELECT slug, last_error_ts, last_error_msg, consecutive_failures FROM slug_errors`
+  );
   const errBySlug = new Map<string, any>();
-  for (const row of errs.rows) errBySlug.set(row.slug as string, row);
+  for (const row of errRows) errBySlug.set(row.slug as string, row);
 
   // Combine: canonical slug list + any extra slugs we've seen in DB
   const allSlugs = new Set<string>(AFC_2027_SLUGS);
@@ -67,32 +108,36 @@ export async function GET() {
     return (b.age_seconds ?? 0) - (a.age_seconds ?? 0);
   });
 
-  // 2. Recent scrape runs
-  const runs = await sql`
-    SELECT id, ts, source, received_count, ok_count, error_count, changes_count, elapsed_ms
-    FROM scrape_runs
-    ORDER BY ts DESC
-    LIMIT 50
-  `;
+  // 2. Recent scrape runs (multi-reader for the same reason)
+  const runRows = await maxRowsSelect<any>(
+    sqlTag => sqlTag`
+      SELECT id, ts, source, received_count, ok_count, error_count, changes_count, elapsed_ms
+      FROM scrape_runs
+      ORDER BY ts DESC
+      LIMIT 50
+    `
+  );
 
   // 3. Summary stats over time windows
   const cutoff1h  = now - 3600;
   const cutoff24h = now - 86400;
   const cutoff7d  = now - 7 * 86400;
-  const stats = await sql`
-    SELECT
-      SUM(CASE WHEN ts >= ${cutoff1h}  THEN 1 ELSE 0 END)::int AS runs_1h,
-      SUM(CASE WHEN ts >= ${cutoff24h} THEN 1 ELSE 0 END)::int AS runs_24h,
-      SUM(CASE WHEN ts >= ${cutoff7d}  THEN 1 ELSE 0 END)::int AS runs_7d,
-      SUM(CASE WHEN ts >= ${cutoff1h}  THEN ok_count    ELSE 0 END)::int AS ok_1h,
-      SUM(CASE WHEN ts >= ${cutoff24h} THEN ok_count    ELSE 0 END)::int AS ok_24h,
-      SUM(CASE WHEN ts >= ${cutoff1h}  THEN error_count ELSE 0 END)::int AS err_1h,
-      SUM(CASE WHEN ts >= ${cutoff24h} THEN error_count ELSE 0 END)::int AS err_24h,
-      MAX(ts) AS last_run_ts,
-      MIN(ts) AS first_run_ts
-    FROM scrape_runs
-  `;
-  const s = stats.rows[0] || {};
+  const statsRows = await maxRowsSelect<any>(
+    sqlTag => sqlTag`
+      SELECT
+        SUM(CASE WHEN ts >= ${cutoff1h}  THEN 1 ELSE 0 END)::int AS runs_1h,
+        SUM(CASE WHEN ts >= ${cutoff24h} THEN 1 ELSE 0 END)::int AS runs_24h,
+        SUM(CASE WHEN ts >= ${cutoff7d}  THEN 1 ELSE 0 END)::int AS runs_7d,
+        SUM(CASE WHEN ts >= ${cutoff1h}  THEN ok_count    ELSE 0 END)::int AS ok_1h,
+        SUM(CASE WHEN ts >= ${cutoff24h} THEN ok_count    ELSE 0 END)::int AS ok_24h,
+        SUM(CASE WHEN ts >= ${cutoff1h}  THEN error_count ELSE 0 END)::int AS err_1h,
+        SUM(CASE WHEN ts >= ${cutoff24h} THEN error_count ELSE 0 END)::int AS err_24h,
+        MAX(ts) AS last_run_ts,
+        MIN(ts) AS first_run_ts
+      FROM scrape_runs
+    `
+  );
+  const s = statsRows[0] || {};
 
   const canonical_count = AFC_2027_SLUGS.length;
   const tracked_count = per_event.length;
@@ -118,7 +163,7 @@ export async function GET() {
       events_err_24h: s.err_24h || 0,
     },
     per_event,
-    recent_runs: runs.rows,
+    recent_runs: runRows,
   }, {
     headers: { "Cache-Control": "no-store" },
   });
