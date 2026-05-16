@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import {
   X, ExternalLink, Bell, BellOff, MapPin, Users, Trophy, Clock,
   TrendingUp, DollarSign, Flame, Info, Sparkles, Activity, Zap,
+  ShoppingCart, Check, Loader2,
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Area, AreaChart,
@@ -332,6 +333,7 @@ export function DetailModal({
             const CategoryRow = ({ c }: { c: typeof event.categories[number] }) => {
               const pctSold = c.quantity ? ((c.quantity - c.remaining) / c.quantity) * 100 : 0;
               const pred = insights?.category_predictions?.find(p => p.name === c.name);
+              const canBuy = !c.sold_out && c.remaining > 0;
               return (
                 <div key={c.name} className="glass rounded-lg p-3">
                   <div className="flex items-center justify-between mb-1">
@@ -375,6 +377,18 @@ export function DetailModal({
                   )}
                   {pred && pred.predicted_sellout_str === "no movement" && (
                     <div className="mt-2 text-[10px] text-slate-500">No sales in last 24h</div>
+                  )}
+                  {/* Buy buttons */}
+                  {canBuy && (
+                    <div className="mt-2.5 pt-2 border-t border-white/5">
+                      <CategoryBuyControls
+                        slug={event.slug}
+                        title={event.title}
+                        category={c.name}
+                        maxQty={Math.max(1, Math.min(c.max_per_order || 4, c.remaining))}
+                        price={c.price}
+                      />
+                    </div>
                   )}
                 </div>
               );
@@ -532,5 +546,89 @@ function BuyScoreCard({ buy }: { buy: Insights["buy_score"] }) {
         </div>
       </div>
     </section>
+  );
+}
+
+/** Per-category buy controls — qty selector + "Queue buy" button + ahlan.sa fallback. */
+function CategoryBuyControls({
+  slug, title, category, maxQty, price,
+}: {
+  slug: string; title: string; category: string; maxQty: number; price: number;
+}) {
+  const [qty, setQty] = useState(1);
+  const [state, setState] = useState<"idle" | "loading" | "queued" | "error">("idle");
+  const [msg, setMsg] = useState<string>("");
+  const [orderId, setOrderId] = useState<number | null>(null);
+
+  async function enqueue() {
+    setState("loading"); setMsg("");
+    try {
+      const r = await fetch("/api/buy/enqueue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, title, category, qty, max_price_sar: price > 0 ? price : null }),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        setState("error");
+        setMsg(d.message || d.error || `HTTP ${r.status}`);
+        return;
+      }
+      setOrderId(d.id);
+      setState("queued");
+      setMsg(`Order #${d.id} queued for your bot`);
+    } catch (e: any) {
+      setState("error");
+      setMsg(e?.message || "Network error");
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1 bg-slate-800/50 rounded-md border border-white/5">
+        <button
+          onClick={() => setQty(Math.max(1, qty - 1))}
+          disabled={qty <= 1 || state === "loading"}
+          className="px-2 py-1 text-xs hover:bg-white/5 rounded-l-md disabled:opacity-30"
+        >−</button>
+        <span className="px-2 text-xs tabular-nums w-6 text-center font-semibold">{qty}</span>
+        <button
+          onClick={() => setQty(Math.min(maxQty, qty + 1))}
+          disabled={qty >= maxQty || state === "loading"}
+          className="px-2 py-1 text-xs hover:bg-white/5 rounded-r-md disabled:opacity-30"
+        >+</button>
+      </div>
+      <button
+        onClick={enqueue}
+        disabled={state === "loading" || state === "queued"}
+        className={clsx(
+          "flex-1 text-[11px] py-1.5 rounded-md font-medium flex items-center justify-center gap-1.5 transition-colors border",
+          state === "queued"
+            ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+            : state === "error"
+            ? "bg-red-500/15 text-red-300 border-red-500/40 hover:bg-red-500/25"
+            : "bg-indigo-500/20 text-indigo-200 border-indigo-500/40 hover:bg-indigo-500/30 disabled:opacity-50"
+        )}
+        title={msg || `Queue ${qty} ${category} ticket${qty > 1 ? "s" : ""} for the bot`}
+      >
+        {state === "loading"  && <Loader2 className="w-3 h-3 animate-spin" />}
+        {state === "queued"   && <Check className="w-3 h-3" />}
+        {state === "error"    && <X className="w-3 h-3" />}
+        {state === "idle"     && <ShoppingCart className="w-3 h-3" />}
+        {state === "queued"   ? `Queued · #${orderId}`
+          : state === "loading" ? "Queueing…"
+          : state === "error"   ? "Retry"
+          : `Buy ${qty} · queue bot`}
+      </button>
+      <a
+        href={`https://www.ahlan.sa/events/details?event=${encodeURIComponent(slug)}`}
+        target="_blank" rel="noopener"
+        className="text-[11px] py-1.5 px-2 rounded-md border border-slate-600/30 bg-slate-700/30 hover:bg-slate-700/50 text-slate-300 flex items-center gap-1"
+        title="Open this match on ahlan.sa to buy manually"
+      >
+        <ExternalLink className="w-3 h-3" />
+        <span className="hidden sm:inline">Manual</span>
+      </a>
+    </div>
   );
 }

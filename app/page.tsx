@@ -6,7 +6,7 @@ import Link from "next/link";
 import {
   Bell, BellOff, X, Search, ExternalLink, TrendingUp,
   TrendingDown, Activity, AlertCircle, Sparkles, Filter, Crown,
-  AlertOctagon, GitCompare, Server,
+  AlertOctagon, GitCompare, Server, ShoppingCart,
 } from "lucide-react";
 import type { Event, StateSnapshot, Subscription, Change, ChangeType } from "@/lib/types";
 import { EventCard } from "@/components/EventCard";
@@ -286,12 +286,20 @@ export default function Page() {
               <span className="hidden sm:inline">Forecast</span>
             </Link>
             <Link
+              href="/buy-queue"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-500/15 text-indigo-200 border border-indigo-500/40 hover:bg-indigo-500/25 transition-colors flex items-center gap-1.5"
+              title="Buy queue (your bot)"
+            >
+              <ShoppingCart className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Bot</span>
+            </Link>
+            <Link
               href="/compare"
               className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium bg-pink-500/10 text-pink-300 border border-pink-500/30 hover:bg-pink-500/20 transition-colors flex items-center gap-1.5"
               title="Compare matches side-by-side"
             >
               <GitCompare className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Compare</span>
+              <span className="hidden lg:inline">Compare</span>
             </Link>
             <Link
               href="/scrape-status"

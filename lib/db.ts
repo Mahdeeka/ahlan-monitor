@@ -77,6 +77,47 @@ export async function initSchema() {
     )
   `;
 
+  // Buy-order queue — the dashboard enqueues, the user's buy_worker.py dequeues
+  await sql`
+    CREATE TABLE IF NOT EXISTS buy_orders (
+      id BIGSERIAL PRIMARY KEY,
+      slug TEXT NOT NULL,
+      title TEXT,
+      category TEXT NOT NULL,
+      qty INTEGER NOT NULL DEFAULT 1,
+      max_price_sar INTEGER,
+      status TEXT NOT NULL DEFAULT 'pending',
+      worker_id TEXT,
+      result TEXT,
+      error_msg TEXT,
+      receipt_url TEXT,
+      notes TEXT,
+      created_at INTEGER NOT NULL,
+      claimed_at INTEGER,
+      completed_at INTEGER,
+      auto_rule_id BIGINT
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS idx_buy_orders_status_created ON buy_orders(status, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_buy_orders_slug ON buy_orders(slug, created_at DESC)`;
+
+  // Auto-buy rules — "if FINAL Premium restocks AND price < 250, auto-enqueue qty 2"
+  await sql`
+    CREATE TABLE IF NOT EXISTS auto_buy_rules (
+      id BIGSERIAL PRIMARY KEY,
+      slug TEXT NOT NULL,
+      category TEXT NOT NULL,
+      qty INTEGER NOT NULL DEFAULT 1,
+      max_price_sar INTEGER,
+      trigger_on TEXT NOT NULL DEFAULT 'back_in_stock',
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at INTEGER NOT NULL,
+      last_fired_at INTEGER,
+      fires_count INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (slug, category, trigger_on)
+    )
+  `;
+
   return { ok: true };
 }
 
