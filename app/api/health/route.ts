@@ -130,20 +130,50 @@ export async function GET() {
     out.components.proxies = { ok: false, error: String(e).slice(0, 200) };
   }
 
-  // ── Events freshness
+  // ── Events freshness — use multi-reader to dodge Neon pool isolation
   try {
-    const ev = await sql`
-      SELECT COUNT(*)::int AS total, MIN(updated_at) AS oldest, MAX(updated_at) AS newest
-      FROM events_latest
-    `;
-    const e0 = ev.rows[0] || {};
+    let bestNewest = 0, bestOldest = 0, bestTotal = 0;
+    // Path 1: static-import sql
+    try {
+      const r = await sql`
+        SELECT COUNT(*)::int AS total, MIN(updated_at) AS oldest, MAX(updated_at) AS newest
+        FROM events_latest
+      `;
+      const e0 = r.rows[0] || {};
+      if (e0.total > 0 && (e0.newest as number) > bestNewest) {
+        bestNewest = e0.newest as number;
+        bestOldest = e0.oldest as number;
+        bestTotal = e0.total as number;
+      }
+    } catch {/* */}
+    // Path 2: dedicated client (often sees fresher data after a recent write)
+    try {
+      const vpg = await import("@vercel/postgres");
+      const client = vpg.createClient();
+      await client.connect();
+      try {
+        const r = await client.sql`
+          SELECT COUNT(*)::int AS total, MIN(updated_at) AS oldest, MAX(updated_at) AS newest
+          FROM events_latest
+        `;
+        const e0 = r.rows[0] || {};
+        if (e0.total > 0 && (e0.newest as number) > bestNewest) {
+          bestNewest = e0.newest as number;
+          bestOldest = e0.oldest as number;
+          bestTotal = e0.total as number;
+        }
+      } finally { await client.end(); }
+    } catch {/* */}
+
+    // Threshold = max of (standard-lane interval + 5 min buffer) = 15 min
+    const STALE_OK = 15 * 60;
     out.components.events = {
-      ok: e0.total > 0 && (now - (e0.newest as number)) < 900,
-      total_tracked: e0.total || 0,
-      oldest_update_ts: e0.oldest || null,
-      newest_update_ts: e0.newest || null,
-      oldest_age_seconds: e0.oldest ? now - (e0.oldest as number) : null,
-      newest_age_seconds: e0.newest ? now - (e0.newest as number) : null,
+      ok: bestTotal > 0 && (now - bestNewest) < STALE_OK,
+      total_tracked: bestTotal,
+      oldest_update_ts: bestOldest || null,
+      newest_update_ts: bestNewest || null,
+      oldest_age_seconds: bestOldest ? now - bestOldest : null,
+      newest_age_seconds: bestNewest ? now - bestNewest : null,
     };
     if (!out.components.events.ok) out.ok = false;
   } catch (e) {
