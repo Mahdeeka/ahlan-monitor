@@ -1,24 +1,27 @@
-name: Poll ALL tickets (10 min)
+name: Poll PRIORITY tickets (3 min)
+
+# Fast lane: only scrapes the slugs flagged by /api/priority-slugs
+# (sold-out events + events with premium categories sold out). Each run is a
+# single scrape of the small priority set — usually <10 events.
 
 on:
   schedule:
-    # Every 10 minutes — single scrape of all 51 events per run
-    - cron: "*/10 * * * *"
+    - cron: "*/3 * * * *"   # every 3 minutes
   workflow_dispatch: {}
   push:
     branches: [main]
     paths:
       - "scripts/poll.py"
-      - ".github/workflows/poll.yml"
+      - ".github/workflows/poll-priority.yml"
 
 concurrency:
-  group: poll-tickets-all
+  group: poll-tickets-priority
   cancel-in-progress: false
 
 jobs:
   poll:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 2
 
     steps:
       - name: Checkout
@@ -34,9 +37,9 @@ jobs:
       - name: Install dependencies
         run: pip install -q -r scripts/requirements.txt
 
-      - name: Single full scrape (mode=all)
+      - name: Single priority scrape (mode=priority)
         env:
           VERCEL_URL: ${{ secrets.VERCEL_URL }}
           SNAPSHOT_SECRET: ${{ secrets.SNAPSHOT_SECRET }}
           WEBSHARE_PROXIES: ${{ secrets.WEBSHARE_PROXIES }}
-        run: python scripts/poll.py --mode all
+        run: python scripts/poll.py --mode priority

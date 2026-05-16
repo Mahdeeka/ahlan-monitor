@@ -54,7 +54,12 @@ async function maxRowsSelect<T>(
 
 export async function GET() {
   const now = Math.floor(Date.now() / 1000);
-  const STALE_THRESHOLD = 10 * 60; // 10 minutes
+  // "Stale" defined differently per match priority:
+  //   priority (3-min poll cadence)  → stale if >6 min old
+  //   normal   (10-min poll cadence) → stale if >15 min old
+  const STALE_PRIORITY = 6 * 60;
+  const STALE_NORMAL   = 15 * 60;
+  const STALE_THRESHOLD = STALE_NORMAL; // exposed in summary
 
   // 1. Per-event last-seen — multi-reader to dodge Neon pool isolation quirk
   const latestRows = await maxRowsSelect<{ slug: string; data: any; updated_at: number }>(
@@ -83,19 +88,40 @@ export async function GET() {
     const err = errBySlug.get(slug);
     const last_seen_ts = row?.updated_at || 0;
     const age = last_seen_ts ? now - last_seen_ts : null;
+    const ev: any = row?.data || {};
+
+    // Priority detection — must match /api/priority-slugs logic
+    const reasons: string[] = [];
+    if (ev.urgency === "sold_out") reasons.push("event_sold_out");
+    if (typeof ev.pct_sold === "number" && ev.pct_sold >= 95) reasons.push("pct_sold_95plus");
+    if (Array.isArray(ev.categories) && ev.categories.length > 0) {
+      const byPrice = [...ev.categories].sort((a: any, b: any) => (b.price || 0) - (a.price || 0));
+      if (byPrice[0]?.sold_out) reasons.push("top_cat_sold_out");
+      const halfIdx = Math.max(1, Math.floor(byPrice.length / 2));
+      const topHalfSold = byPrice.slice(0, halfIdx).some((c: any) => c.sold_out);
+      if (topHalfSold && !reasons.includes("top_cat_sold_out"))
+        reasons.push("premium_cat_sold_out");
+    }
+    const isPriority = reasons.length > 0;
+    const stale_thresh = isPriority ? STALE_PRIORITY : STALE_NORMAL;
+
     return {
       slug,
-      title: row?.data?.title || slug,
-      stage: row?.data?.stage || "—",
-      venue: row?.data?.venue || "",
-      date: row?.data?.date || "",
+      title: ev.title || slug,
+      stage: ev.stage || "—",
+      venue: ev.venue || "",
+      date: ev.date || "",
       last_seen_ts,
       age_seconds: age,
-      is_stale: age == null || age > STALE_THRESHOLD,
+      is_stale: age == null || age > stale_thresh,
+      stale_threshold_seconds: stale_thresh,
       is_canonical: AFC_2027_SLUGS.includes(slug),
-      urgency: row?.data?.urgency || "unknown",
-      total_remaining: row?.data?.total_remaining ?? null,
-      total_capacity: row?.data?.total_capacity ?? null,
+      is_priority: isPriority,
+      priority_reasons: reasons,
+      poll_cadence: isPriority ? "3min" : "10min",
+      urgency: ev.urgency || "unknown",
+      total_remaining: ev.total_remaining ?? null,
+      total_capacity: ev.total_capacity ?? null,
       last_error: err ? {
         ts: err.last_error_ts as number,
         msg: err.last_error_msg as string,
@@ -103,8 +129,9 @@ export async function GET() {
       } : null,
     };
   }).sort((a, b) => {
-    // Stale first, then by age
+    // Stale first, then priority, then by age
     if (a.is_stale !== b.is_stale) return a.is_stale ? -1 : 1;
+    if (a.is_priority !== b.is_priority) return a.is_priority ? -1 : 1;
     return (b.age_seconds ?? 0) - (a.age_seconds ?? 0);
   });
 
@@ -143,6 +170,21 @@ export async function GET() {
   const tracked_count = per_event.length;
   const stale_count = per_event.filter(e => e.is_stale).length;
   const fresh_count = tracked_count - stale_count;
+  const priority_count = per_event.filter(e => e.is_priority).length;
+  const normal_count = tracked_count - priority_count;
+
+  // Per-source run counts (so the UI can distinguish all/priority cadences)
+  const priorityRunsRows = await maxRowsSelect<any>(
+    sqlTag => sqlTag`
+      SELECT
+        SUM(CASE WHEN ts >= ${cutoff1h}  AND source = 'github-actions-priority' THEN 1 ELSE 0 END)::int AS p_1h,
+        SUM(CASE WHEN ts >= ${cutoff24h} AND source = 'github-actions-priority' THEN 1 ELSE 0 END)::int AS p_24h,
+        SUM(CASE WHEN ts >= ${cutoff1h}  AND source = 'github-actions-all'      THEN 1 ELSE 0 END)::int AS a_1h,
+        SUM(CASE WHEN ts >= ${cutoff24h} AND source = 'github-actions-all'      THEN 1 ELSE 0 END)::int AS a_24h
+      FROM scrape_runs
+    `
+  );
+  const ps = priorityRunsRows[0] || {};
 
   return NextResponse.json({
     now,
@@ -151,7 +193,10 @@ export async function GET() {
       tracked_event_count: tracked_count,
       fresh_event_count: fresh_count,
       stale_event_count: stale_count,
+      priority_event_count: priority_count,
+      normal_event_count: normal_count,
       stale_threshold_seconds: STALE_THRESHOLD,
+      stale_threshold_priority_seconds: STALE_PRIORITY,
       last_run_ts: s.last_run_ts || null,
       seconds_since_last_run: s.last_run_ts ? now - (s.last_run_ts as number) : null,
       runs_1h:  s.runs_1h  || 0,
@@ -161,6 +206,10 @@ export async function GET() {
       events_ok_24h: s.ok_24h || 0,
       events_err_1h: s.err_1h || 0,
       events_err_24h: s.err_24h || 0,
+      priority_runs_1h:  ps.p_1h  || 0,
+      priority_runs_24h: ps.p_24h || 0,
+      all_runs_1h:       ps.a_1h  || 0,
+      all_runs_24h:      ps.a_24h || 0,
     },
     per_event,
     recent_runs: runRows,

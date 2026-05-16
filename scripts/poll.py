@@ -2,22 +2,31 @@
 """
 poll.py — single-pass ahlan.sa AFC 2027 ticket poller.
 
+Modes:
+  all       (default)  Scrape every event — used by the 10-min slow workflow.
+  priority             Scrape only the slugs returned by /api/priority-slugs
+                       (sold-out events + events with premium categories sold
+                       out). Used by the 3-min fast workflow.
+
 Workflow:
-  1. Discover all event slugs via /api/ticketing/eventList  (auto-finds new events
-     like the FINAL the moment they are published).
-  2. Fetch eventDetail for each slug in parallel.
-  3. Normalise to the same Event shape the Vercel app expects.
-  4. POST {events: [...], secret: "..."} to {VERCEL_URL}/api/snapshot
+  1. Build slug list:
+       - mode=all      → discover via /api/ticketing/eventList (+ canonical fallback)
+       - mode=priority → fetch list from {VERCEL_URL}/api/priority-slugs
+  2. Fetch eventDetail for each slug in parallel via rotating Webshare proxies.
+  3. POST {events: [...], source: "github-actions-<mode>"} to /api/snapshot.
 
 Env:
   VERCEL_URL          (required) e.g. https://ahlanweb.vercel.app
-  SNAPSHOT_SECRET     (optional) shared secret if Vercel side has one
+  SNAPSHOT_SECRET     (required) shared secret with Vercel side
+  WEBSHARE_PROXIES    (required) "host:port:user:pass" lines, one per proxy
+  POLL_MODE           (optional) "all" or "priority" — defaults to "all"
 """
 import os
 import sys
 import json
 import time
 import random
+import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -225,13 +234,48 @@ def discover_slugs():
     return merged
 
 
+def fetch_priority_slugs() -> list[str]:
+    """Ask the Vercel dashboard which slugs are currently 'priority' to poll fast."""
+    url = f"{VERCEL_URL}/api/priority-slugs"
+    try:
+        r = requests.get(url, timeout=15)
+        if not r.ok:
+            print(f"  ⚠ priority-slugs HTTP {r.status_code} — fast pass aborted")
+            return []
+        data = r.json()
+        slugs = data.get("slugs") or []
+        details = data.get("details") or []
+        print(f"  🎯 Priority list from Vercel: {len(slugs)} slug(s)")
+        for d in details[:8]:
+            print(f"      ▸ {d.get('slug'):35} {d.get('urgency'):12} {d.get('pct_sold'):>5.1f}% sold  reasons={d.get('reasons')}")
+        if len(details) > 8:
+            print(f"      ▸ ... and {len(details) - 8} more")
+        return slugs
+    except Exception as e:
+        print(f"  ⚠ priority-slugs fetch failed: {e}")
+        return []
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=("all", "priority"),
+                        default=os.environ.get("POLL_MODE", "all"),
+                        help="all = scrape every event; priority = scrape only sold-out/almost-gone slugs")
+    args = parser.parse_args()
+    mode = args.mode
+
     t0 = time.time()
-    print(f"📡 Poll started at {time.strftime('%H:%M:%S UTC', time.gmtime())}")
+    print(f"📡 Poll started at {time.strftime('%H:%M:%S UTC', time.gmtime())}  mode={mode}")
 
-    slugs = discover_slugs()
+    if mode == "priority":
+        slugs = fetch_priority_slugs()
+        if not slugs:
+            print("  ⏭️  Nothing to do — no priority slugs right now. Exiting cleanly.")
+            return
+    else:
+        slugs = discover_slugs()
 
-    # Fetch all events in parallel
+    # Fetch chosen events in parallel
     events = []
     with ThreadPoolExecutor(max_workers=10) as ex:
         futures = {
@@ -251,16 +295,16 @@ def main():
     err_count = len(events) - ok_count
     print(f"  Fetched {ok_count}/{len(events)} events  (errors: {err_count})  in {time.time()-t0:.1f}s")
 
-    # Post to Vercel
-    # Send ALL events (including ones with errors) so the dashboard's monitor
-    # can tell which slugs are failing.
+    # Post to Vercel — send ALL events (including ones with errors) so the
+    # dashboard's monitor can tell which slugs are failing.
     if not events:
         print("  ❌ No events at all — aborting POST")
         sys.exit(1)
     if ok_count == 0:
         print(f"  ❌ ALL {len(events)} events errored — aborting POST")
         sys.exit(1)
-    body = {"events": events, "source": "github-actions"}
+    source_tag = f"github-actions-{mode}"
+    body = {"events": events, "source": source_tag}
     if SECRET:
         body["secret"] = SECRET
     try:

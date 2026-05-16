@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
 import {
   Activity, CheckCircle2, AlertTriangle, XCircle, Clock,
-  ArrowLeft, RefreshCw, Cpu, Database, Calendar
+  ArrowLeft, RefreshCw, Cpu, Database, Calendar, Zap,
 } from "lucide-react";
 
 type PerEvent = {
@@ -16,7 +16,11 @@ type PerEvent = {
   last_seen_ts: number;
   age_seconds: number | null;
   is_stale: boolean;
+  stale_threshold_seconds: number;
   is_canonical: boolean;
+  is_priority: boolean;
+  priority_reasons: string[];
+  poll_cadence: string;
   urgency: string;
   total_remaining: number | null;
   total_capacity: number | null;
@@ -41,12 +45,17 @@ type Status = {
     tracked_event_count: number;
     fresh_event_count: number;
     stale_event_count: number;
+    priority_event_count: number;
+    normal_event_count: number;
     stale_threshold_seconds: number;
+    stale_threshold_priority_seconds: number;
     last_run_ts: number | null;
     seconds_since_last_run: number | null;
     runs_1h: number; runs_24h: number; runs_7d: number;
     events_ok_1h: number; events_ok_24h: number;
     events_err_1h: number; events_err_24h: number;
+    priority_runs_1h: number; priority_runs_24h: number;
+    all_runs_1h: number; all_runs_24h: number;
   };
   per_event: PerEvent[];
   recent_runs: Run[];
@@ -91,7 +100,7 @@ export default function ScrapeStatusPage() {
   const [data, setData] = useState<Status | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | "stale" | "fresh" | "errors" | "non-canonical">("all");
+  const [filter, setFilter] = useState<"all" | "priority" | "normal" | "stale" | "fresh" | "errors" | "non-canonical">("all");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [tick, setTick] = useState(0);
 
@@ -116,9 +125,11 @@ export default function ScrapeStatusPage() {
   const filtered = useMemo(() => {
     if (!data) return [];
     let evts = data.per_event;
-    if (filter === "stale")  evts = evts.filter(e => e.is_stale);
-    if (filter === "fresh")  evts = evts.filter(e => !e.is_stale);
-    if (filter === "errors") evts = evts.filter(e => e.last_error && e.last_error.consecutive_failures > 0);
+    if (filter === "priority") evts = evts.filter(e => e.is_priority);
+    if (filter === "normal")   evts = evts.filter(e => !e.is_priority);
+    if (filter === "stale")    evts = evts.filter(e => e.is_stale);
+    if (filter === "fresh")    evts = evts.filter(e => !e.is_stale);
+    if (filter === "errors")   evts = evts.filter(e => e.last_error && e.last_error.consecutive_failures > 0);
     if (filter === "non-canonical") evts = evts.filter(e => !e.is_canonical);
     return evts;
   }, [data, filter, tick]);
@@ -177,6 +188,38 @@ export default function ScrapeStatusPage() {
 
         {data && (
           <>
+            {/* TWO-TIER POLLING BANNER */}
+            <section className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="rounded-2xl p-4 border border-red-500/30 bg-gradient-to-br from-red-500/15 to-red-500/5">
+                <div className="flex items-center gap-2 text-[11px] text-red-300 uppercase tracking-wider mb-1">
+                  <Zap className="w-3.5 h-3.5" />
+                  Priority cadence · every 3 min
+                </div>
+                <div className="text-2xl font-bold text-red-200 tabular-nums">
+                  {data.summary.priority_event_count}
+                  <span className="text-base opacity-50"> events</span>
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  Sold out / premium-cat sold out / 95%+ sold ·{" "}
+                  {data.summary.priority_runs_1h} runs in last hour
+                </div>
+              </div>
+              <div className="rounded-2xl p-4 border border-indigo-500/30 bg-gradient-to-br from-indigo-500/15 to-indigo-500/5">
+                <div className="flex items-center gap-2 text-[11px] text-indigo-300 uppercase tracking-wider mb-1">
+                  <Clock className="w-3.5 h-3.5" />
+                  Standard cadence · every 10 min
+                </div>
+                <div className="text-2xl font-bold text-indigo-200 tabular-nums">
+                  {data.summary.normal_event_count}
+                  <span className="text-base opacity-50"> events</span>
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  All other matches ·{" "}
+                  {data.summary.all_runs_1h} runs in last hour
+                </div>
+              </div>
+            </section>
+
             {/* TOP STATS */}
             <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
               <StatCard
@@ -191,14 +234,14 @@ export default function ScrapeStatusPage() {
                 icon={<CheckCircle2 className="w-4 h-4" />}
                 label="Fresh"
                 value={data.summary.fresh_event_count}
-                sub={`updated <${Math.floor(data.summary.stale_threshold_seconds / 60)}m ago`}
+                sub={`fresh per match's cadence`}
                 tone="green"
               />
               <StatCard
                 icon={<AlertTriangle className="w-4 h-4" />}
                 label="Stale"
                 value={data.summary.stale_event_count}
-                sub={`no update >${Math.floor(data.summary.stale_threshold_seconds / 60)}m`}
+                sub={`past expected cadence`}
                 tone={data.summary.stale_event_count > 0 ? "red" : "green"}
               />
               <StatCard
@@ -206,13 +249,13 @@ export default function ScrapeStatusPage() {
                 label="Last scrape"
                 value={fmtAge(liveAge(data.summary.last_run_ts))}
                 sub={fmtTime(data.summary.last_run_ts)}
-                tone={liveAge(data.summary.last_run_ts) != null && liveAge(data.summary.last_run_ts)! < 120 ? "green" : "orange"}
+                tone={liveAge(data.summary.last_run_ts) != null && liveAge(data.summary.last_run_ts)! < 200 ? "green" : "orange"}
               />
               <StatCard
                 icon={<Cpu className="w-4 h-4" />}
                 label="Runs (1h / 24h)"
                 value={`${data.summary.runs_1h} / ${data.summary.runs_24h}`}
-                sub={`${data.summary.runs_7d} this week`}
+                sub={`${data.summary.priority_runs_1h}p · ${data.summary.all_runs_1h}all (1h)`}
               />
               <StatCard
                 icon={<XCircle className="w-4 h-4" />}
@@ -226,7 +269,7 @@ export default function ScrapeStatusPage() {
             {/* FILTERS */}
             <section className="glass rounded-2xl p-3 sm:p-4 flex flex-wrap gap-2 items-center">
               <span className="text-xs text-slate-400 px-2">View:</span>
-              {(["all","stale","fresh","errors","non-canonical"] as const).map(f => (
+              {(["all","priority","normal","stale","fresh","errors","non-canonical"] as const).map(f => (
                 <button
                   key={f}
                   onClick={() => setFilter(f)}
@@ -238,6 +281,8 @@ export default function ScrapeStatusPage() {
                   }
                 >
                   {f === "all" ? `All (${data.per_event.length})` :
+                   f === "priority" ? `🔥 Priority (${data.per_event.filter(e => e.is_priority).length})` :
+                   f === "normal" ? `Normal (${data.per_event.filter(e => !e.is_priority).length})` :
                    f === "stale" ? `Stale (${data.per_event.filter(e => e.is_stale).length})` :
                    f === "fresh" ? `Fresh (${data.per_event.filter(e => !e.is_stale).length})` :
                    f === "errors" ? `Errors (${data.per_event.filter(e => e.last_error && e.last_error.consecutive_failures > 0).length})` :
@@ -266,7 +311,14 @@ export default function ScrapeStatusPage() {
                   >
                     <div className="flex items-start justify-between gap-2 mb-2">
                       <div className="min-w-0">
-                        <div className="font-semibold text-sm truncate" title={ev.title}>{ev.title}</div>
+                        <div className="font-semibold text-sm truncate flex items-center gap-1.5" title={ev.title}>
+                          {ev.is_priority && (
+                            <span title={`Fast-poll (every 3 min) — ${ev.priority_reasons.join(", ")}`}>
+                              <Zap className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                            </span>
+                          )}
+                          <span className="truncate">{ev.title}</span>
+                        </div>
                         <div className="text-[10px] text-slate-500 truncate" title={ev.slug}>{ev.slug}</div>
                       </div>
                       <span className={"text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 " +
@@ -378,13 +430,24 @@ export default function ScrapeStatusPage() {
             </section>
 
             {/* FOOTER NOTE */}
-            <section className="text-[11px] text-slate-500 px-2 pb-8">
-              Auto-refreshes every 15s when enabled. The scraper runs every 5 minutes via
-              GitHub Actions, each run pushing 8 polls ≈ every 30s for ~4 minutes. Events
-              are "fresh" if their last update was within{" "}
-              <span className="text-slate-400">
-                {Math.floor(data.summary.stale_threshold_seconds / 60)} minutes
-              </span>.
+            <section className="text-[11px] text-slate-500 px-2 pb-8 space-y-1">
+              <div>
+                Page auto-refreshes every 15s when enabled. Two scrape cadences run via
+                GitHub Actions:
+              </div>
+              <div>
+                <span className="text-red-300">🔥 Priority lane</span> — every{" "}
+                <span className="text-slate-300">3 min</span>, only sold-out events or events
+                with premium categories sold out (currently{" "}
+                <span className="text-slate-300">{data.summary.priority_event_count}</span> matches).
+                Stale threshold: {Math.floor(data.summary.stale_threshold_priority_seconds / 60)}m.
+              </div>
+              <div>
+                <span className="text-indigo-300">⏱ Standard lane</span> — every{" "}
+                <span className="text-slate-300">10 min</span>, all{" "}
+                <span className="text-slate-300">{data.summary.canonical_slug_count}</span> events.
+                Stale threshold: {Math.floor(data.summary.stale_threshold_seconds / 60)}m.
+              </div>
             </section>
           </>
         )}
