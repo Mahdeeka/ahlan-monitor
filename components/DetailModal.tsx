@@ -294,47 +294,81 @@ export function DetailModal({
             </section>
           )}
 
-          {/* ───── CATEGORIES (per price tier) ───── */}
-          <section>
-            <h3 className="text-sm font-semibold text-slate-200 mb-2">
-              <DollarSign className="w-4 h-4 inline mr-1 text-emerald-400" />
-              Categories
-            </h3>
-            <div className="space-y-2">
-              {event.categories.map(c => {
-                const pctSold = c.quantity ? ((c.quantity - c.remaining) / c.quantity) * 100 : 0;
-                return (
-                  <div key={c.name} className="glass rounded-lg p-3">
-                    <div className="flex items-center justify-between mb-1">
-                      <div>
-                        <div className="text-sm font-medium">{c.name}</div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">
-                          Max per order: {c.max_per_order}
-                          {c.price > 0 && <> · SAR {c.price.toLocaleString()}</>}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className={clsx("text-sm font-semibold", c.sold_out ? "text-red-400" : "text-slate-100")}>
-                          {c.sold_out ? "SOLD OUT" : `${c.remaining.toLocaleString()} / ${c.quantity.toLocaleString()}`}
-                        </div>
-                        {!c.sold_out && c.quantity > 0 && (
-                          <div className="text-[11px] text-slate-500">{pctSold.toFixed(0)}% sold</div>
-                        )}
+          {/* ───── CATEGORIES (per price tier) — public + hospitality split ───── */}
+          {(() => {
+            const publicCats = event.categories.filter(c =>
+              c.is_hospitality === false ||
+              (c.is_hospitality === undefined && !c.name.toUpperCase().startsWith("MATCH"))
+            );
+            const hospCats = event.categories.filter(c =>
+              c.is_hospitality === true ||
+              (c.is_hospitality === undefined && c.name.toUpperCase().startsWith("MATCH"))
+            );
+            const CategoryRow = ({ c }: { c: typeof event.categories[number] }) => {
+              const pctSold = c.quantity ? ((c.quantity - c.remaining) / c.quantity) * 100 : 0;
+              return (
+                <div key={c.name} className="glass rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <div>
+                      <div className="text-sm font-medium">{c.name}</div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        Max per order: {c.max_per_order}
+                        {c.price > 0 && <> · SAR {c.price.toLocaleString()}</>}
                       </div>
                     </div>
-                    <div className="w-full h-1.5 bg-slate-700/40 rounded-full overflow-hidden">
-                      <div className={clsx("h-full transition-all",
-                        c.sold_out ? "bg-red-500"
-                        : pctSold >= 90 ? "bg-orange-500"
-                        : pctSold >= 70 ? "bg-yellow-500"
-                        : "bg-emerald-500")}
-                        style={{ width: `${pctSold}%` }} />
+                    <div className="text-right">
+                      <div className={clsx("text-sm font-semibold", c.sold_out ? "text-red-400" : "text-slate-100")}>
+                        {c.sold_out ? "SOLD OUT" : `${c.remaining.toLocaleString()} / ${c.quantity.toLocaleString()}`}
+                      </div>
+                      {!c.sold_out && c.quantity > 0 && (
+                        <div className="text-[11px] text-slate-500">{pctSold.toFixed(0)}% sold</div>
+                      )}
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          </section>
+                  <div className="w-full h-1.5 bg-slate-700/40 rounded-full overflow-hidden">
+                    <div className={clsx("h-full transition-all",
+                      c.sold_out ? "bg-red-500"
+                      : pctSold >= 90 ? "bg-orange-500"
+                      : pctSold >= 70 ? "bg-yellow-500"
+                      : "bg-emerald-500")}
+                      style={{ width: `${pctSold}%` }} />
+                  </div>
+                </div>
+              );
+            };
+            return (
+              <>
+                <section>
+                  <h3 className="text-sm font-semibold text-slate-200 mb-2">
+                    <DollarSign className="w-4 h-4 inline mr-1 text-emerald-400" />
+                    Public tickets
+                  </h3>
+                  <div className="space-y-2">
+                    {publicCats.map(c => <CategoryRow key={c.name} c={c} />)}
+                    {publicCats.length === 0 && (
+                      <div className="glass rounded-lg p-3 text-xs text-slate-500 text-center">
+                        No public categories on sale.
+                      </div>
+                    )}
+                  </div>
+                </section>
+                {hospCats.length > 0 && (
+                  <section>
+                    <h3 className="text-sm font-semibold text-slate-200 mb-2">
+                      <DollarSign className="w-4 h-4 inline mr-1 text-amber-400" />
+                      Hospitality packages
+                      <span className="text-[10px] text-slate-500 ml-2 font-normal">
+                        (premium add-ons, not counted in &quot;sold out&quot; status)
+                      </span>
+                    </h3>
+                    <div className="space-y-2 opacity-90">
+                      {hospCats.map(c => <CategoryRow key={c.name} c={c} />)}
+                    </div>
+                  </section>
+                )}
+              </>
+            );
+          })()}
 
           {insightsLoading && !insights && (
             <div className="text-center text-xs text-slate-500 py-2 animate-pulse">

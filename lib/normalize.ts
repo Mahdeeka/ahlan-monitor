@@ -5,6 +5,17 @@ function safeInt(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * MATCH Hospitality packages (e.g. "MATCH Club Gold", SAR 2600+) are
+ * premium-package add-ons, NOT regular public tickets. We exclude them from
+ * headline totals + the "sold out" decision so that when CAT 1 / CAT 2 /
+ * Premium are all gone, the event is reported as sold out even if pricey
+ * hospitality packages remain.
+ */
+export function isHospitality(name: string): boolean {
+  return (name || "").toUpperCase().startsWith("MATCH");
+}
+
 export function classifyStage(slug: string): string {
   const s = (slug || "").toLowerCase();
   if (s.includes("final") && !s.includes("3rd")) return "FINAL";
@@ -47,23 +58,34 @@ export function normalizeEvent(slug: string, data: any): Event {
   const cats = tickets.map(t => {
     const remaining = safeInt(t.remaining);
     const quantity = safeInt(t.quantity);
+    const name = ((t.title as string) || "").trim();
     return {
-      name: ((t.title as string) || "").trim(),
+      name,
       remaining,
       quantity,
       price: safeInt(t.price),
       max_per_order: safeInt(t.max_per_order),
-      sold_out: remaining === 0,
+      sold_out: remaining === 0 && quantity > 0,
+      is_hospitality: isHospitality(name),
     };
   });
 
-  const total_remaining = cats.reduce((s, c) => s + c.remaining, 0);
-  const total_capacity  = cats.reduce((s, c) => s + c.quantity, 0);
+  // Public-only totals (hospitality packages excluded)
+  const publicCats = cats.filter(c => !c.is_hospitality);
+  const hospCats   = cats.filter(c => c.is_hospitality);
+  const total_remaining = publicCats.reduce((s, c) => s + c.remaining, 0);
+  const total_capacity  = publicCats.reduce((s, c) => s + c.quantity, 0);
+  const hospitality_remaining = hospCats.reduce((s, c) => s + c.remaining, 0);
+  const hospitality_capacity  = hospCats.reduce((s, c) => s + c.quantity, 0);
   const pct_sold = total_capacity ? ((total_capacity - total_remaining) / total_capacity) * 100 : 0;
 
+  const publicCount = publicCats.length;
+  const publicSoldOut = publicCats.filter(c => c.sold_out).length;
+
   let urgency: Urgency = "available";
-  if (total_capacity === 0) urgency = "unknown";
-  else if (total_remaining === 0) urgency = "sold_out";
+  if (publicCount === 0 && total_capacity === 0) urgency = "unknown";
+  else if (publicCount > 0 && publicSoldOut === publicCount) urgency = "sold_out";
+  else if (total_capacity > 0 && total_remaining === 0) urgency = "sold_out";
   else if (pct_sold >= 90) urgency = "almost_gone";
   else if (pct_sold >= 70) urgency = "selling_fast";
 
@@ -83,6 +105,8 @@ export function normalizeEvent(slug: string, data: any): Event {
     total_capacity,
     pct_sold: Math.round(pct_sold * 10) / 10,
     urgency,
+    hospitality_remaining,
+    hospitality_capacity,
     poster: data?.poster || "",
     logo: data?.logo || "",
   };

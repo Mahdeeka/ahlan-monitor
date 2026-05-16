@@ -204,29 +204,57 @@ def classify_stage(slug: str) -> str:
     return "—"
 
 
+def is_hospitality(cat_name: str) -> bool:
+    """MATCH Hospitality packages (SAR 1900-5600 add-ons) aren't public tickets.
+    When CAT 1/CAT 2/Premium are all sold out, the event is effectively sold out
+    even though hospitality packages may still be on sale."""
+    return (cat_name or "").upper().startswith("MATCH")
+
+
 def normalize(slug: str, data: dict) -> dict:
     if not data or "_error" in data:
         return {"slug": slug, "error": (data or {}).get("_error", "unknown")}
     tickets = data.get("event_tickets") or []
     cats = []
-    total_rem = 0; total_cap = 0
+    # Totals counted ONLY across public categories — hospitality packages
+    # are excluded so 'sold out' actually means sold out for normal fans.
+    public_rem = 0; public_cap = 0
+    public_count = 0; public_sold_out_count = 0
     for t in tickets:
+        name = (t.get("title") or "").strip()
         rem = safe_int(t.get("remaining")); qty = safe_int(t.get("quantity"))
+        sold_out = (rem == 0 and qty > 0)
         cats.append({
-            "name": (t.get("title") or "").strip(),
+            "name": name,
             "remaining": rem, "quantity": qty,
             "price": safe_int(t.get("price")),
             "max_per_order": safe_int(t.get("max_per_order")),
-            "sold_out": rem == 0,
+            "sold_out": sold_out,
+            "is_hospitality": is_hospitality(name),
         })
-        total_rem += rem; total_cap += qty
-    pct = ((total_cap - total_rem) / total_cap * 100) if total_cap else 0
-    if total_cap == 0: urgency = "unknown"
-    elif total_rem == 0: urgency = "sold_out"
+        if not is_hospitality(name):
+            public_rem += rem
+            public_cap += qty
+            public_count += 1
+            if sold_out: public_sold_out_count += 1
+
+    pct = ((public_cap - public_rem) / public_cap * 100) if public_cap else 0
+    if public_count == 0 and public_cap == 0:
+        urgency = "unknown"
+    elif public_count > 0 and public_sold_out_count == public_count:
+        # All public categories sold out → SOLD OUT (regardless of hospitality)
+        urgency = "sold_out"
+    elif public_cap > 0 and public_rem == 0:
+        urgency = "sold_out"
     elif pct >= 90: urgency = "almost_gone"
     elif pct >= 70: urgency = "selling_fast"
     else: urgency = "available"
     num_s = slug.split("-")[-1]
+    # Hospitality totals — exposed separately for the UI but NOT part of the
+    # headline numbers.
+    hosp_cats  = [c for c in cats if c.get("is_hospitality")]
+    hosp_rem   = sum(c["remaining"] for c in hosp_cats)
+    hosp_cap   = sum(c["quantity"]  for c in hosp_cats)
     return {
         "slug": slug,
         "id": data.get("_id", ""),
@@ -238,10 +266,14 @@ def normalize(slug: str, data: dict) -> dict:
         "stage": classify_stage(slug),
         "match_number": int(num_s) if num_s.isdigit() else 0,
         "categories": cats,
-        "total_remaining": total_rem,
-        "total_capacity": total_cap,
-        "pct_sold": round(pct, 1),
-        "urgency": urgency,
+        # Headline totals: PUBLIC tickets only (CAT/Premium), excluding MATCH hospitality
+        "total_remaining": public_rem,
+        "total_capacity":  public_cap,
+        "pct_sold":        round(pct, 1),
+        "urgency":         urgency,
+        # Hospitality side-totals for the modal
+        "hospitality_remaining": hosp_rem,
+        "hospitality_capacity":  hosp_cap,
         "poster": data.get("poster") or "",
         "logo": data.get("logo") or "",
     }

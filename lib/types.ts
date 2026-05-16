@@ -7,6 +7,10 @@ export interface Category {
   price: number;
   max_per_order: number;
   sold_out: boolean;
+  /** MATCH Hospitality packages (e.g. "MATCH Club Gold") are flagged so the
+   *  UI can separate them from regular public tickets. Older DB rows may
+   *  lack this — callers should default to deriving from name.startsWith("MATCH"). */
+  is_hospitality?: boolean;
 }
 
 export interface Event {
@@ -20,10 +24,14 @@ export interface Event {
   stage: string;
   match_number: number;
   categories: Category[];
+  /** Public-only totals (excludes MATCH hospitality packages) */
   total_remaining: number;
   total_capacity: number;
   pct_sold: number;
   urgency: Urgency;
+  /** Hospitality (MATCH packages) side totals */
+  hospitality_remaining?: number;
+  hospitality_capacity?: number;
   poster: string;
   logo: string;
   error?: string;

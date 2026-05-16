@@ -34,7 +34,9 @@ export function EventCard({
   onToggleSubscribe: () => void;
   onClick: () => void;
 }) {
-  const realCats = event.categories.filter(c => !c.name.toUpperCase().startsWith("MATCH"));
+  const realCats = event.categories.filter(c =>
+    c.is_hospitality === false || (c.is_hospitality === undefined && !c.name.toUpperCase().startsWith("MATCH"))
+  );
   const teams = teamsForSlug(event.slug);
   const countdown = countdownText(event.date_unix);
   // Priority signal — for the small ⚡ icon
