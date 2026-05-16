@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root { color-scheme: dark; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    @apply text-slate-100 antialiased;
+    background:
+      radial-gradient(1200px circle at 80% -10%, rgba(99,102,241,0.12), transparent 50%),
+      radial-gradient(1000px circle at -10% 100%, rgba(168,85,247,0.10), transparent 50%),
+      linear-gradient(180deg, #0a0c1a 0%, #08091a 100%);
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: rgba(255,255,255,0.025);
+    backdrop-filter: blur(12px) saturate(140%);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .glass-hover:hover {
+    background: rgba(255,255,255,0.045);
+    border-color: rgba(255,255,255,0.12);
+  }
+  .gradient-text {
+    background: linear-gradient(135deg, #a5b4fc, #c4b5fd, #f0abfc);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .text-glow {
+    text-shadow: 0 0 30px rgba(165,180,252,0.3);
+  }
+  .badge-sold_out      { background: rgba(239,68,68,0.12);  color: #fca5a5; border: 1px solid rgba(239,68,68,0.3); }
+  .badge-almost_gone   { background: rgba(249,115,22,0.12); color: #fdba74; border: 1px solid rgba(249,115,22,0.3); }
+  .badge-selling_fast  { background: rgba(234,179,8,0.12);  color: #fde047; border: 1px solid rgba(234,179,8,0.3); }
+  .badge-available     { background: rgba(34,197,94,0.12);  color: #86efac; border: 1px solid rgba(34,197,94,0.3); }
+  .badge-unknown       { background: rgba(100,116,139,0.12); color: #cbd5e1; border: 1px solid rgba(100,116,139,0.3); }
+  .urgency-sold_out    { color: #ef4444; }
+  .urgency-almost_gone { color: #f97316; }
+  .urgency-selling_fast{ color: #eab308; }
+  .urgency-available   { color: #22c55e; }
+  .urgency-unknown     { color: #94a3b8; }
+  .scroll-fade { mask-image: linear-gradient(to bottom, #000 92%, transparent); }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: rgba(255,255,255,0.02); }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
+
+/* Make text inputs not look browser-default */
+input, select {
+  color-scheme: dark;
+}

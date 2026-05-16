@@ -1,0 +1,50 @@
+name: Poll ahlan.sa tickets
+
+on:
+  schedule:
+    # Every 5 minutes — workflow internally polls 10× with 30s sleep
+    # giving effective ~30s polling cadence at minimum extra cost.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}      # allows manual trigger from Actions tab
+  push:
+    branches: [main]
+    paths:
+      - "scripts/poll.py"
+      - ".github/workflows/poll.yml"
+
+# Cancel a previous run if a new one starts (avoid overlap)
+concurrency:
+  group: poll-tickets
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -q requests
+
+      - name: Poll loop (10 passes ≈ every 30s for 5 minutes)
+        env:
+          VERCEL_URL: ${{ secrets.VERCEL_URL }}
+          SNAPSHOT_SECRET: ${{ secrets.SNAPSHOT_SECRET }}
+        run: |
+          set +e
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            echo "::group::Poll #$i"
+            python scripts/poll.py
+            echo "::endgroup::"
+            if [ "$i" -lt 10 ]; then sleep 28; fi
+          done
+          exit 0
