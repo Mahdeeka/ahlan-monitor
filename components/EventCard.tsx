@@ -4,6 +4,7 @@ import { Bell, BellOff, ArrowRight, Zap, Calendar, MapPin } from "lucide-react";
 import clsx from "clsx";
 import type { Event, Urgency } from "@/lib/types";
 import { teamsForSlug } from "@/lib/teams";
+import { Sparkline } from "@/components/Sparkline";
 
 const URGENCY_LABEL: Record<Urgency, string> = {
   available:    "AVAILABLE",
@@ -98,7 +99,7 @@ export function EventCard({
       </div>
 
       {/* progress */}
-      <div className="mb-4">
+      <div className="mb-3">
         <div className="flex justify-between items-baseline text-xs mb-1.5">
           <span className="text-slate-300">
             <span className="font-semibold text-white">{event.total_remaining.toLocaleString()}</span>
@@ -112,6 +113,11 @@ export function EventCard({
             style={{ width: `${Math.max(2, event.pct_sold)}%` }}
           />
         </div>
+      </div>
+
+      {/* 24h sparkline */}
+      <div className="mb-3">
+        <Sparkline slug={event.slug} color={sparkColor(event.urgency)} height={28} />
       </div>
 
       {/* categories */}
@@ -164,5 +170,15 @@ function barClass(u: Urgency): string {
     case "selling_fast":return "bg-gradient-to-r from-yellow-500 to-amber-400";
     case "available":   return "bg-gradient-to-r from-green-500 to-emerald-400";
     default:            return "bg-gradient-to-r from-slate-500 to-slate-400";
+  }
+}
+
+function sparkColor(u: Urgency): string {
+  switch (u) {
+    case "sold_out":    return "#ef4444";
+    case "almost_gone": return "#f97316";
+    case "selling_fast":return "#eab308";
+    case "available":   return "#22c55e";
+    default:            return "#818cf8";
   }
 }

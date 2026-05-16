@@ -33,10 +33,11 @@ export async function GET(_: Request, { params }: { params: { slug: string } }) 
   const event: Event = typeof r0.data === "string" ? JSON.parse(r0.data) : (r0.data as Event);
   const last_update = r0.updated_at as number;
 
-  // 2) Recent history (last 7 days, max 2000 points)
+  // 2) Recent history (last 7 days, max 2000 points). Pull categories too so
+  //    we can compute per-category sellout predictions.
   const cutoff = Math.floor(Date.now() / 1000) - 7 * 86400;
   const hist = await sql`
-    SELECT ts, total_remaining, total_capacity
+    SELECT ts, total_remaining, total_capacity, categories
     FROM snapshots
     WHERE slug = ${slug} AND ts >= ${cutoff}
     ORDER BY ts ASC
@@ -47,6 +48,62 @@ export async function GET(_: Request, { params }: { params: { slug: string } }) 
     total_remaining: row.total_remaining as number,
     total_capacity: row.total_capacity as number,
   }));
+
+  // Per-category history → per-cat velocity → per-cat sellout prediction
+  const perCatHistory: Map<string, Array<{ ts: number; remaining: number; quantity: number }>> = new Map();
+  for (const row of hist.rows) {
+    const cats = typeof row.categories === "string" ? JSON.parse(row.categories) : (row.categories as any[]);
+    if (!Array.isArray(cats)) continue;
+    for (const c of cats) {
+      if (!perCatHistory.has(c.name)) perCatHistory.set(c.name, []);
+      perCatHistory.get(c.name)!.push({
+        ts: row.ts as number,
+        remaining: c.remaining as number,
+        quantity: c.quantity as number,
+      });
+    }
+  }
+
+  const nowTs = Math.floor(Date.now() / 1000);
+  const catPredictions = event.categories.map(c => {
+    const h = perCatHistory.get(c.name) || [];
+    // velocity over last 24h
+    const cutoff24 = nowTs - 86400;
+    const recent = h.filter(p => p.ts >= cutoff24);
+    let velocity_per_hour: number | null = null;
+    let predicted_sellout_ts: number | null = null;
+    let predicted_sellout_str: string | null = null;
+    if (recent.length >= 2) {
+      const first = recent[0]; const last = recent[recent.length - 1];
+      const hours = Math.max(0.001, (last.ts - first.ts) / 3600);
+      const sold = first.remaining - last.remaining;
+      velocity_per_hour = sold / hours;
+      if (velocity_per_hour > 0 && c.remaining > 0) {
+        const hoursLeft = c.remaining / velocity_per_hour;
+        predicted_sellout_ts = nowTs + Math.round(hoursLeft * 3600);
+        if (hoursLeft < 1)        predicted_sellout_str = `~${Math.round(hoursLeft * 60)}m`;
+        else if (hoursLeft < 24)  predicted_sellout_str = `~${Math.round(hoursLeft)}h`;
+        else                       predicted_sellout_str = `~${Math.round(hoursLeft / 24)}d`;
+      } else if (c.sold_out) {
+        predicted_sellout_str = "sold out";
+      } else if (velocity_per_hour === 0) {
+        predicted_sellout_str = "no movement";
+      }
+    }
+    return {
+      name: c.name,
+      remaining: c.remaining,
+      quantity: c.quantity,
+      sold_out: c.sold_out,
+      price: c.price,
+      is_hospitality: (c as any).is_hospitality === true ||
+        ((c as any).is_hospitality === undefined && c.name.toUpperCase().startsWith("MATCH")),
+      velocity_per_hour,
+      velocity_per_day: velocity_per_hour != null ? velocity_per_hour * 24 : null,
+      predicted_sellout_ts,
+      predicted_sellout_str,
+    };
+  });
 
   // 3) Stadium + teams
   const stadium = stadiumInfo(event.venue);
@@ -128,5 +185,6 @@ export async function GET(_: Request, { params }: { params: { slug: string } }) 
     team_reach_prob,
     buy_score,
     insights,
+    category_predictions: catPredictions,
   }, { headers: { "Cache-Control": "no-store" } });
 }

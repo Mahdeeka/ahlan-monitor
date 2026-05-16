@@ -4,13 +4,14 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
   X, ExternalLink, Bell, BellOff, MapPin, Users, Trophy, Clock,
-  TrendingUp, DollarSign, Flame, Info, Sparkles,
+  TrendingUp, DollarSign, Flame, Info, Sparkles, Activity, Zap,
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Area, AreaChart,
 } from "recharts";
 import clsx from "clsx";
 import type { Event } from "@/lib/types";
+import { DropsTimeline } from "@/components/DropsTimeline";
 
 interface HistPoint { ts: number; r: number; q: number; }
 
@@ -36,6 +37,18 @@ type Insights = {
     hours_to_match: number | null;
   };
   insights: Array<{ icon: string; text: string }>;
+  category_predictions?: Array<{
+    name: string;
+    remaining: number;
+    quantity: number;
+    sold_out: boolean;
+    price: number;
+    is_hospitality: boolean;
+    velocity_per_hour: number | null;
+    velocity_per_day: number | null;
+    predicted_sellout_ts: number | null;
+    predicted_sellout_str: string | null;
+  }>;
 };
 
 function rangeToCutoff(r: "1d" | "7d" | "30d" | "all"): number {
@@ -294,6 +307,18 @@ export function DetailModal({
             </section>
           )}
 
+          {/* ───── DROPS TIMELINE ───── */}
+          <section>
+            <h3 className="text-sm font-semibold text-slate-200 mb-2">
+              <Activity className="w-4 h-4 inline mr-1 text-cyan-400" />
+              Drops & sellouts timeline
+              <span className="text-[10px] text-slate-500 ml-2 font-normal">
+                (restocks, sellouts, and bulk sales)
+              </span>
+            </h3>
+            <DropsTimeline slug={event.slug} />
+          </section>
+
           {/* ───── CATEGORIES (per price tier) — public + hospitality split ───── */}
           {(() => {
             const publicCats = event.categories.filter(c =>
@@ -306,6 +331,7 @@ export function DetailModal({
             );
             const CategoryRow = ({ c }: { c: typeof event.categories[number] }) => {
               const pctSold = c.quantity ? ((c.quantity - c.remaining) / c.quantity) * 100 : 0;
+              const pred = insights?.category_predictions?.find(p => p.name === c.name);
               return (
                 <div key={c.name} className="glass rounded-lg p-3">
                   <div className="flex items-center justify-between mb-1">
@@ -333,6 +359,23 @@ export function DetailModal({
                       : "bg-emerald-500")}
                       style={{ width: `${pctSold}%` }} />
                   </div>
+                  {/* Sellout predictor */}
+                  {pred && !c.sold_out && pred.predicted_sellout_str && (
+                    <div className="mt-2 flex items-center justify-between text-[10px]">
+                      <div className="flex items-center gap-1 text-indigo-300">
+                        <Zap className="w-2.5 h-2.5" />
+                        <span>
+                          Sells out in <span className="font-semibold">{pred.predicted_sellout_str}</span>
+                          {pred.velocity_per_day != null && pred.velocity_per_day > 0 && (
+                            <span className="text-slate-500"> · {Math.round(pred.velocity_per_day)}/day</span>
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {pred && pred.predicted_sellout_str === "no movement" && (
+                    <div className="mt-2 text-[10px] text-slate-500">No sales in last 24h</div>
+                  )}
                 </div>
               );
             };

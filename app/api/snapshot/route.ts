@@ -19,6 +19,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+/** Detect changes between two snapshots. */
+const BULK_SALE_THRESHOLD = 50; // tickets vanished in one interval
+
 function detectChanges(prev: Event[], curr: Event[]) {
   const prevBySlug = new Map(prev.map(e => [e.slug, e]));
   const out: Array<{ slug: string; title: string; type: string; details: any }> = [];
@@ -34,6 +37,29 @@ function detectChanges(prev: Event[], curr: Event[]) {
         details: { before: p.total_remaining, after: ev.total_remaining, delta },
       });
     }
+    // ── Bulk-sale detector — large negative delta in one interval ──
+    if (delta <= -BULK_SALE_THRESHOLD) {
+      // Also break down per-category for diagnostics
+      const prevCatsMap = new Map(p.categories.map(c => [c.name, c]));
+      const perCatDrops: Array<{ category: string; before: number; after: number; delta: number }> = [];
+      for (const c of ev.categories) {
+        const pc = prevCatsMap.get(c.name);
+        if (!pc) continue;
+        const catDelta = c.remaining - pc.remaining;
+        if (catDelta <= -10) {
+          perCatDrops.push({ category: c.name, before: pc.remaining, after: c.remaining, delta: catDelta });
+        }
+      }
+      out.push({
+        slug: ev.slug, title: ev.title, type: "bulk_sale",
+        details: {
+          tickets_lost: Math.abs(delta),
+          before: p.total_remaining,
+          after: ev.total_remaining,
+          per_category: perCatDrops,
+        },
+      });
+    }
     if (p.urgency !== ev.urgency) {
       out.push({
         slug: ev.slug, title: ev.title, type: "status_change",
@@ -46,10 +72,11 @@ function detectChanges(prev: Event[], curr: Event[]) {
       if (!pc) continue;
       if (pc.sold_out && !c.sold_out) {
         out.push({ slug: ev.slug, title: ev.title, type: "back_in_stock",
-                   details: { category: c.name, remaining: c.remaining } });
+                   details: { category: c.name, remaining: c.remaining,
+                              added: c.remaining - pc.remaining } });
       } else if (!pc.sold_out && c.sold_out) {
         out.push({ slug: ev.slug, title: ev.title, type: "category_sold_out",
-                   details: { category: c.name } });
+                   details: { category: c.name, last_remaining: pc.remaining } });
       }
     }
   }

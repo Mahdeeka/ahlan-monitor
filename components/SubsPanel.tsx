@@ -195,13 +195,15 @@ export function SubsPanel({
 }
 
 function notifIcon(t: ChangeType): string {
-  return { back_in_stock: "🟢", tickets_added: "📈", tickets_sold: "📉",
-           category_sold_out: "🔴", status_change: "⚡", new_event: "✨" }[t] || "•";
+  return ({ back_in_stock: "🟢", tickets_added: "📈", tickets_sold: "📉",
+           category_sold_out: "🔴", status_change: "⚡", new_event: "✨",
+           bulk_sale: "⚠️" } as Record<ChangeType, string>)[t] || "•";
 }
 function notifLabel(t: ChangeType): string {
-  return { back_in_stock: "Back in stock!", tickets_added: "Tickets added",
+  return ({ back_in_stock: "Back in stock!", tickets_added: "Tickets added",
            tickets_sold: "Tickets sold", category_sold_out: "Category sold out",
-           status_change: "Status changed", new_event: "New match" }[t] || t;
+           status_change: "Status changed", new_event: "New match",
+           bulk_sale: "Bulk sale!" } as Record<ChangeType, string>)[t] || t;
 }
 function formatDetails(n: Change): string {
   const d = n.details || {};

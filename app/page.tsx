@@ -6,6 +6,7 @@ import Link from "next/link";
 import {
   Bell, BellOff, X, Search, ExternalLink, TrendingUp,
   TrendingDown, Activity, AlertCircle, Sparkles, Filter, Crown,
+  AlertOctagon, GitCompare, Server,
 } from "lucide-react";
 import type { Event, StateSnapshot, Subscription, Change, ChangeType } from "@/lib/types";
 import { EventCard } from "@/components/EventCard";
@@ -285,12 +286,28 @@ export default function Page() {
               <span className="hidden sm:inline">Forecast</span>
             </Link>
             <Link
+              href="/compare"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium bg-pink-500/10 text-pink-300 border border-pink-500/30 hover:bg-pink-500/20 transition-colors flex items-center gap-1.5"
+              title="Compare matches side-by-side"
+            >
+              <GitCompare className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Compare</span>
+            </Link>
+            <Link
               href="/scrape-status"
               className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700/40 text-slate-300 border border-slate-600/30 hover:bg-slate-700/60 transition-colors flex items-center gap-1.5"
               title="Scrape health monitor"
             >
               <Activity className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Monitor</span>
+              <span className="hidden lg:inline">Monitor</span>
+            </Link>
+            <Link
+              href="/health"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/20 transition-colors flex items-center gap-1.5"
+              title="System status"
+            >
+              <Server className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline">Status</span>
             </Link>
             <div className="flex items-center gap-2 text-slate-400">
               <span className={`inline-block w-2 h-2 rounded-full ${stale ? "bg-red-500" : "bg-green-500"} animate-pulse`} />
@@ -371,6 +388,48 @@ export default function Page() {
             <StatCard label="Tickets left"   value={state.summary.total_remaining.toLocaleString()} sub={`${state.summary.pct_sold}% sold`} />
           </motion.div>
         )}
+
+        {/* BULK-SALE ALERT BANNER */}
+        {state?.recent_changes && (() => {
+          const cutoff = Math.floor(Date.now() / 1000) - 3600;
+          const bulks = state.recent_changes
+            .filter(c => c.type === "bulk_sale" && c.ts >= cutoff)
+            .slice(0, 3);
+          if (bulks.length === 0) return null;
+          return (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+              className="mt-4 rounded-2xl border border-red-500/40 bg-gradient-to-r from-red-500/15 to-orange-500/10 p-4"
+            >
+              <div className="flex items-start gap-3">
+                <AlertOctagon className="w-5 h-5 text-red-400 shrink-0 mt-0.5 animate-pulse" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold text-red-200 mb-1">
+                    Bulk-sale activity detected in last hour
+                  </div>
+                  <div className="space-y-1">
+                    {bulks.map(b => (
+                      <button key={b.id}
+                        onClick={() => {
+                          const ev = state.events.find(e => e.slug === b.slug);
+                          if (ev) setDetail(ev);
+                        }}
+                        className="block text-left text-xs text-slate-200 hover:text-white">
+                        <span className="font-medium">{b.title}</span>
+                        <span className="text-red-300 mx-1.5">·</span>
+                        <span className="text-red-300 font-semibold">{b.details?.tickets_lost ?? "?"} tickets</span>
+                        <span className="text-slate-400"> in one scrape interval</span>
+                        <span className="text-slate-500 ml-1.5">
+                          ({Math.floor((Date.now() / 1000 - b.ts) / 60)}m ago)
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          );
+        })()}
       </section>
 
       {/* FILTERS */}
@@ -502,13 +561,15 @@ function Select({ value, onChange, options }: {
 }
 
 function changeIcon(t: ChangeType): string {
-  return { back_in_stock: "🟢", tickets_added: "📈", tickets_sold: "📉",
-           category_sold_out: "🔴", status_change: "⚡", new_event: "✨" }[t] || "•";
+  return ({ back_in_stock: "🟢", tickets_added: "📈", tickets_sold: "📉",
+           category_sold_out: "🔴", status_change: "⚡", new_event: "✨",
+           bulk_sale: "⚠️" } as Record<ChangeType, string>)[t] || "•";
 }
 function changeLabel(t: ChangeType): string {
-  return { back_in_stock: "Back in stock!", tickets_added: "Tickets added",
+  return ({ back_in_stock: "Back in stock!", tickets_added: "Tickets added",
            tickets_sold: "Tickets sold", category_sold_out: "Category sold out",
-           status_change: "Status changed", new_event: "New match" }[t] || t;
+           status_change: "Status changed", new_event: "New match",
+           bulk_sale: "Bulk sale!" } as Record<ChangeType, string>)[t] || t;
 }
 function formatDetails(ch: Change): string {
   const d = ch.details || {};

@@ -52,6 +52,14 @@ export interface StateSnapshot {
   last_updated: number;
   events: Event[];
   summary: Summary;
+  recent_changes?: Array<{
+    id: number;
+    ts: number;
+    slug: string;
+    title: string;
+    type: ChangeType;
+    details: any;
+  }>;
 }
 
 export type ChangeType =
@@ -59,6 +67,7 @@ export type ChangeType =
   | "category_sold_out"
   | "tickets_added"
   | "tickets_sold"
+  | "bulk_sale"          // ≥50 tickets vanished in one snapshot interval — suspected scalper hit
   | "status_change"
   | "new_event";
 
