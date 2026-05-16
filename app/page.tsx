@@ -325,10 +325,33 @@ export default function Page() {
       {/* HERO STATS */}
       <section className="max-w-[1600px] mx-auto px-4 sm:px-6 pt-6">
         {loading && !state && (
-          <div className="text-center py-12">
-            <div className="inline-block w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-            <div className="text-sm text-slate-400 mt-3">Loading ticket data...</div>
-          </div>
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+              {[...Array(6)].map((_, i) => (
+                <div key={i} className="glass rounded-xl p-3 h-[68px] animate-pulse">
+                  <div className="h-2.5 w-1/2 bg-slate-700/40 rounded" />
+                  <div className="h-6 w-2/3 bg-slate-700/30 rounded mt-2.5" />
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {[...Array(8)].map((_, i) => (
+                <div key={i} className="glass rounded-2xl p-5 h-[270px] animate-pulse">
+                  <div className="h-2 w-12 bg-slate-700/40 rounded mb-3" />
+                  <div className="h-4 w-3/4 bg-slate-700/40 rounded mb-2" />
+                  <div className="h-2 w-1/2 bg-slate-700/30 rounded mb-1" />
+                  <div className="h-2 w-2/3 bg-slate-700/30 rounded mb-6" />
+                  <div className="h-1.5 w-full bg-slate-700/30 rounded mb-6" />
+                  <div className="space-y-2">
+                    <div className="h-2 w-full bg-slate-700/20 rounded" />
+                    <div className="h-2 w-5/6 bg-slate-700/20 rounded" />
+                    <div className="h-2 w-4/6 bg-slate-700/20 rounded" />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="sr-only">Loading ticket data…</div>
+          </>
         )}
         {error && (
           <div className="bg-red-500/10 border border-red-500/20 text-red-300 rounded-xl p-4 mb-4 flex items-center gap-2">
@@ -415,7 +438,13 @@ export default function Page() {
         {state && filtered.length === 0 && (
           <div className="text-center py-16 text-slate-500">
             <Filter className="w-8 h-8 mx-auto mb-2 opacity-50" />
-            No matches found with these filters.
+            <div className="font-medium">No matches found with these filters.</div>
+            <button
+              onClick={() => { setSearch(""); setStageFilter(""); setUrgencyFilter(""); setSubscribedOnly(false); }}
+              className="mt-3 text-xs px-3 py-1.5 rounded-lg bg-slate-700/40 hover:bg-slate-700/60 text-slate-300 border border-slate-600/30"
+            >
+              Clear all filters
+            </button>
           </div>
         )}
       </main>
