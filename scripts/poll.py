@@ -17,17 +17,43 @@ import os
 import sys
 import json
 import time
+import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-VERCEL_URL = (os.environ.get("VERCEL_URL") or "").rstrip("/")
-SECRET     = os.environ.get("SNAPSHOT_SECRET", "")
-ORG_SLUG   = "afc-asiancup-2027"
+VERCEL_URL    = (os.environ.get("VERCEL_URL") or "").rstrip("/")
+SECRET        = os.environ.get("SNAPSHOT_SECRET", "")
+ORG_SLUG      = "afc-asiancup-2027"
+PROXIES_RAW   = os.environ.get("WEBSHARE_PROXIES", "")
 
 if not VERCEL_URL:
     print("ERROR: VERCEL_URL env var is required", file=sys.stderr)
     sys.exit(1)
+
+# Parse Webshare proxies: lines of "host:port:user:pass"
+PROXIES: list[str] = []
+if PROXIES_RAW:
+    for raw in PROXIES_RAW.replace(",", "\n").splitlines():
+        raw = raw.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        try:
+            h, p, u, pw = raw.split(":")
+            PROXIES.append(f"http://{u}:{pw}@{h}:{p}")
+        except ValueError:
+            print(f"  ⚠ skipping malformed proxy line: {raw[:40]}")
+if PROXIES:
+    print(f"🔌 Loaded {len(PROXIES)} Webshare proxies for ahlan.sa rotation")
+else:
+    print("⚠ No WEBSHARE_PROXIES configured — going direct (likely to get 429)")
+
+
+def pick_proxy():
+    if not PROXIES:
+        return None
+    p = random.choice(PROXIES)
+    return {"http": p, "https": p}
 
 # Fallback slugs if discovery fails (so the bot still runs)
 FALLBACK_SLUGS = [
@@ -50,7 +76,7 @@ FALLBACK_SLUGS = [
     "afc-cup-27-w40-v-w42-47", "afc-cup-27-w44-v-w43-47",
     "afc-cup-27-w40-v-w42-48", "afc-cup-27-w43-v-w44-48",
     "afc-cup-27-w45-v-w46-49", "afc-cup-27-w47-v-w48-50",
-    "afc-cup-27-3rd-place-50", "afc-cup-27-final-50", "afc-cup-27-final-51",
+    "afc-cup-27-3rd-place-50", "afc-cup-27-final-50",
 ]
 
 HEADERS = {
@@ -126,24 +152,36 @@ def normalize(slug: str, data: dict) -> dict:
     }
 
 
-def fetch_with_retry(url: str, max_attempts: int = 3, timeout: int = 15):
+def fetch_with_retry(url: str, max_attempts: int = 4, timeout: int = 20):
+    """Fetch ahlan.sa via a random Webshare proxy; rotate on 429/error."""
+    last_err = "no attempt"
     for attempt in range(1, max_attempts + 1):
+        proxies = pick_proxy()
         try:
-            r = requests.get(url, headers=HEADERS, timeout=timeout)
+            r = requests.get(url, headers=HEADERS, proxies=proxies, timeout=timeout)
             if r.status_code == 429:
+                last_err = "HTTP 429"
                 if attempt < max_attempts:
-                    time.sleep(2 ** attempt)
+                    time.sleep(1 + attempt)
                     continue
-                return {"_error": f"HTTP 429"}
+                return {"_error": last_err}
+            if r.status_code == 404:
+                # Slug doesn't exist (event not yet published) — don't keep retrying
+                return {"_error": "HTTP 404"}
             if not r.ok:
-                return {"_error": f"HTTP {r.status_code}"}
+                last_err = f"HTTP {r.status_code}"
+                if attempt < max_attempts:
+                    time.sleep(1)
+                    continue
+                return {"_error": last_err}
             return r.json()
         except Exception as e:
+            last_err = str(e)[:120]
             if attempt < max_attempts:
                 time.sleep(1)
                 continue
-            return {"_error": str(e)[:120]}
-    return {"_error": "exhausted retries"}
+            return {"_error": last_err}
+    return {"_error": last_err}
 
 
 def discover_slugs():

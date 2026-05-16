@@ -1,4 +1,4 @@
-/** All 55 real AFC Asian Cup 2027 event slugs (verified from ahlan.sa) */
+/** All real AFC Asian Cup 2027 event slugs (verified from ahlan.sa) */
 export const AFC_2027_SLUGS = [
   // Group stage (1-36)
   "afc-cup-27-ksa-vs-pls-1",  "afc-cup-27-kuw-vs-oma-2",   "afc-cup-27-bhr-vs-prk-3",
@@ -29,5 +29,4 @@ export const AFC_2027_SLUGS = [
   // 3rd place + FINAL
   "afc-cup-27-3rd-place-50",
   "afc-cup-27-final-50",
-  "afc-cup-27-final-51",
 ];
