@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import Link from "next/link";
 import {
   Bell, BellOff, X, Search, ExternalLink, TrendingUp,
   TrendingDown, Activity, AlertCircle, Sparkles, Filter
@@ -264,6 +265,14 @@ export default function Page() {
           </div>
           <div className="hidden sm:block flex-1" />
           <div className="flex items-center gap-2 sm:gap-3 text-xs sm:text-sm ml-auto">
+            <Link
+              href="/scrape-status"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700/40 text-slate-300 border border-slate-600/30 hover:bg-slate-700/60 transition-colors flex items-center gap-1.5"
+              title="Scrape health monitor"
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Monitor</span>
+            </Link>
             <div className="flex items-center gap-2 text-slate-400">
               <span className={`inline-block w-2 h-2 rounded-full ${stale ? "bg-red-500" : "bg-green-500"} animate-pulse`} />
               <span>{agoText}</span>

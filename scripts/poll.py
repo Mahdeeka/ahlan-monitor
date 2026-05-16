@@ -55,8 +55,9 @@ def pick_proxy():
     p = random.choice(PROXIES)
     return {"http": p, "https": p}
 
-# Fallback slugs if discovery fails (so the bot still runs)
+# Fallback slugs if discovery fails (canonical 51 events verified via eventList API)
 FALLBACK_SLUGS = [
+    # Group stage 1-36
     "afc-cup-27-ksa-vs-pls-1", "afc-cup-27-kuw-vs-oma-2", "afc-cup-27-bhr-vs-prk-3",
     "afc-cup-27-uzb-vs-jor-4", "afc-cup-27-syr-vs-kgz-5", "afc-cup-27-irn-vs-chn-6",
     "afc-cup-27-ksa-vs-pls-7", "afc-cup-27-tjk-vs-irq-8", "afc-cup-27-kor-vs-tbd-9",
@@ -69,14 +70,17 @@ FALLBACK_SLUGS = [
     "afc-cup-27-uzb-vs-bhr-28", "afc-cup-27-irn-vs-syr-29", "afc-cup-27-kgz-vs-chn-30",
     "afc-cup-27-aus-tjk-31", "afc-cup-27-iraq-vs-sing-32", "afc-cup-27-kor-vs-uae-33",
     "afc-cup-27-jpn-vs-qtr-34", "afc-cup-27-tha-vs-idn-35", "afc-cup-27-vie-vs-tbc-36",
+    # R16 (note irregular slugs)
     "afc-cup-27-1b-vs-3acd-38", "afc-cup-27-1d-vsbef-39", "afc-cup-27-1a-vs-3cde-40",
-    "afc-cup-27-1f-vs-2e-41", "afc-cup-27-1e-vs-2d-43", "afc-cup-27-1c-vs-3abf-44",
-    "afc-cup-27-w37-v-w38-44", "afc-cup-27-w37-v-w39-45",
-    "afc-cup-27-w38-v-w41-46", "afc-cup-27-w39-v-w41-46",
-    "afc-cup-27-w40-v-w42-47", "afc-cup-27-w44-v-w43-47",
-    "afc-cup-27-w40-v-w42-48", "afc-cup-27-w43-v-w44-48",
+    "afc-cup-27-1f-vs-2e-41", "afc-cup-2b-v-2f-42", "afc-cup-27-1e-vs-2d-43",
+    "afc-cup-27-1c-vs-3abf-44", "afc-cup-2a-vs-2c",
+    # QF
+    "afc-cup-27-w37-v-w39-45", "afc-cup-27-w38-v-w41-46",
+    "afc-cup-27-w44-v-w43-47", "afc-cup-27-w40-v-w42-48",
+    # SF
     "afc-cup-27-w45-v-w46-49", "afc-cup-27-w47-v-w48-50",
-    "afc-cup-27-3rd-place-50", "afc-cup-27-final-50",
+    # FINAL
+    "afc-cup-27-final-50",
 ]
 
 HEADERS = {
@@ -185,20 +189,40 @@ def fetch_with_retry(url: str, max_attempts: int = 4, timeout: int = 20):
 
 
 def discover_slugs():
-    """Hit eventList API to get every published slug (incl. FINAL when out)."""
-    url = (f"https://www.ahlan.sa/api/ticketing/eventList"
-           f"?organizationSlug={ORG_SLUG}&language=en&page=1&per_page=200")
-    data = fetch_with_retry(url, max_attempts=3)
-    if "_error" in data:
-        print(f"  ⚠ eventList discovery failed ({data['_error']}) — using fallback list")
+    """Hit eventList API to get every published slug.
+
+    Returns the union of (a) what the API returns now and (b) the canonical
+    fallback list — that way we never *lose* an event if discovery returns
+    fewer than expected (e.g. transient API hiccup), and we *gain* events the
+    moment ahlan.sa publishes them.
+    """
+    discovered: list[str] = []
+    # API caps per_page at 100; paginate just in case (currently only ~51 events)
+    for page in (1, 2, 3):
+        url = (f"https://www.ahlan.sa/api/ticketing/eventList"
+               f"?organizationSlug={ORG_SLUG}&language=en&page={page}&per_page=100")
+        data = fetch_with_retry(url, max_attempts=3)
+        if "_error" in data:
+            print(f"  ⚠ eventList discovery (page {page}) failed: {data['_error']}")
+            break
+        events = data.get("data") or []
+        page_slugs = [e["slug"] for e in events if e.get("slug")]
+        discovered.extend(page_slugs)
+        if len(page_slugs) < 100:
+            break  # no more pages
+
+    if not discovered:
+        print(f"  ⚠ eventList returned no slugs — using {len(FALLBACK_SLUGS)} fallback only")
         return FALLBACK_SLUGS
-    events = data.get("data") or []
-    slugs = [e["slug"] for e in events if e.get("slug")]
-    if not slugs:
-        print("  ⚠ eventList returned empty — using fallback list")
-        return FALLBACK_SLUGS
-    print(f"  ✓ Discovered {len(slugs)} slugs from eventList API")
-    return slugs
+
+    # Union with fallback so a transient miss never drops an event
+    merged = list(dict.fromkeys([*discovered, *FALLBACK_SLUGS]))
+    new_in_discovery = [s for s in discovered if s not in FALLBACK_SLUGS]
+    if new_in_discovery:
+        print(f"  ✓ Discovered {len(discovered)} via API; {len(new_in_discovery)} NEW: {new_in_discovery}")
+    else:
+        print(f"  ✓ Discovered {len(discovered)} via API; merged to {len(merged)} with fallback")
+    return merged
 
 
 def main():
@@ -228,11 +252,15 @@ def main():
     print(f"  Fetched {ok_count}/{len(events)} events  (errors: {err_count})  in {time.time()-t0:.1f}s")
 
     # Post to Vercel
-    valid = [e for e in events if "error" not in e]
-    if not valid:
-        print("  ❌ No valid events to push — aborting POST")
+    # Send ALL events (including ones with errors) so the dashboard's monitor
+    # can tell which slugs are failing.
+    if not events:
+        print("  ❌ No events at all — aborting POST")
         sys.exit(1)
-    body = {"events": valid}
+    if ok_count == 0:
+        print(f"  ❌ ALL {len(events)} events errored — aborting POST")
+        sys.exit(1)
+    body = {"events": events, "source": "github-actions"}
     if SECRET:
         body["secret"] = SECRET
     try:

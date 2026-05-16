@@ -11,6 +11,7 @@
 import { NextResponse } from "next/server";
 import {
   initSchema, getLatestEvents, recordSnapshot, recordChange,
+  recordScrapeRun, markSlugError, clearSlugError,
 } from "@/lib/db";
 import type { Event } from "@/lib/types";
 
@@ -78,6 +79,7 @@ function authorize(req: Request, body: any): boolean {
 }
 
 export async function POST(req: Request) {
+  const t0 = Date.now();
   let body: any;
   try { body = await req.json(); }
   catch { return NextResponse.json({ error: "invalid json" }, { status: 400 }); }
@@ -98,19 +100,44 @@ export async function POST(req: Request) {
   const prevBySlug = new Map(prevEvents.map(e => [e.slug, e]));
 
   let inserted = 0;
+  let okCount = 0;
+  let errCount = 0;
   await Promise.all(events.map(async ev => {
-    if (ev.error) return;
+    if (ev.error) {
+      errCount++;
+      try { await markSlugError(ev.slug, ts, ev.error); } catch {/* */}
+      return;
+    }
+    okCount++;
     const changed = hasChanged(prevBySlug.get(ev.slug), ev);
     await recordSnapshot(ev, ts, changed);
+    try { await clearSlugError(ev.slug); } catch {/* */}
     if (changed) inserted++;
   }));
   for (const ch of changes) {
     await recordChange(ts, ch.slug, ch.title, ch.type, ch.details);
   }
 
+  // Record this scrape pass for the monitoring page
+  const source = (typeof body?.source === "string" && body.source) ||
+                 (req.headers.get("user-agent") || "").includes("GitHub")
+                   ? "github-actions"
+                   : "external";
+  try {
+    await recordScrapeRun({
+      ts, source,
+      received: events.length, ok: okCount, errors: errCount, changes: changes.length,
+      ip: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || undefined,
+      ua: req.headers.get("user-agent")?.slice(0, 200) || undefined,
+      elapsedMs: Date.now() - t0,
+    });
+  } catch (e) { console.warn("recordScrapeRun failed:", e); }
+
   return NextResponse.json({
     ok: true, ts,
     received: events.length,
+    ok_count: okCount,
+    error_count: errCount,
     snapshots_inserted: inserted,
     changes_detected: changes.length,
     sample_changes: changes.slice(0, 5),

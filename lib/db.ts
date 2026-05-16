@@ -50,7 +50,68 @@ export async function initSchema() {
     )
   `;
 
+  // Per-scrape-pass health log: one row per /api/snapshot call
+  await sql`
+    CREATE TABLE IF NOT EXISTS scrape_runs (
+      id BIGSERIAL PRIMARY KEY,
+      ts INTEGER NOT NULL,
+      source TEXT NOT NULL,           -- "github-actions" | "local-monitor" | "vercel-cron" | "manual"
+      received_count INTEGER NOT NULL,
+      ok_count INTEGER NOT NULL,
+      error_count INTEGER NOT NULL,
+      changes_count INTEGER NOT NULL,
+      ip TEXT,
+      user_agent TEXT,
+      elapsed_ms INTEGER
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS idx_scrape_runs_ts ON scrape_runs(ts DESC)`;
+
+  // Per-event scrape errors (so we can show "haven't seen slug X in N minutes")
+  await sql`
+    CREATE TABLE IF NOT EXISTS slug_errors (
+      slug TEXT PRIMARY KEY,
+      last_error_ts INTEGER NOT NULL,
+      last_error_msg TEXT,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0
+    )
+  `;
+
   return { ok: true };
+}
+
+/** Append a row to scrape_runs (one per snapshot push). */
+export async function recordScrapeRun(args: {
+  ts: number; source: string; received: number; ok: number;
+  errors: number; changes: number; ip?: string; ua?: string; elapsedMs?: number;
+}) {
+  await sql`
+    INSERT INTO scrape_runs
+      (ts, source, received_count, ok_count, error_count, changes_count, ip, user_agent, elapsed_ms)
+    VALUES
+      (${args.ts}, ${args.source}, ${args.received}, ${args.ok},
+       ${args.errors}, ${args.changes}, ${args.ip || null},
+       ${args.ua || null}, ${args.elapsedMs || null})
+  `;
+}
+
+/** Mark a slug as failed (call when an event arrived with .error set). */
+export async function markSlugError(slug: string, ts: number, msg: string) {
+  await sql`
+    INSERT INTO slug_errors (slug, last_error_ts, last_error_msg, consecutive_failures)
+    VALUES (${slug}, ${ts}, ${msg.slice(0, 200)}, 1)
+    ON CONFLICT (slug) DO UPDATE
+    SET last_error_ts = EXCLUDED.last_error_ts,
+        last_error_msg = EXCLUDED.last_error_msg,
+        consecutive_failures = slug_errors.consecutive_failures + 1
+  `;
+}
+
+/** Clear error state for a slug (call when it succeeds). */
+export async function clearSlugError(slug: string) {
+  await sql`
+    UPDATE slug_errors SET consecutive_failures = 0 WHERE slug = ${slug}
+  `;
 }
 
 /** Upsert latest snapshot for an event + append to history if changed. */

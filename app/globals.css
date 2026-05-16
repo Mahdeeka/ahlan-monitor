@@ -46,6 +46,7 @@
   .urgency-available   { color: #22c55e; }
   .urgency-unknown     { color: #94a3b8; }
   .scroll-fade { mask-image: linear-gradient(to bottom, #000 92%, transparent); }
+  .animate-spin-slow { animation: spin 3s linear infinite; }
 }
 
 /* Custom scrollbar */
