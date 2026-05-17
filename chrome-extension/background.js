@@ -153,11 +153,34 @@ async function runFallbackPoll() {
   }
 }
 
+async function seedDefaultAccountsIfEmpty() {
+  try {
+    const { ahlan_accounts = [] } = await chrome.storage.local.get("ahlan_accounts");
+    const hasReal = ahlan_accounts.some(a => a?.email && a?.password);
+    if (hasReal) return; // user already has accounts — don't overwrite
+    // Try to load bundled defaults. The file is .gitignored — only present if
+    // the user ran the seed script locally.
+    try {
+      importScripts(chrome.runtime.getURL("default_accounts.js"));
+    } catch (e) {
+      console.log("[ahlan-bg] no default_accounts.js bundled — user will add accounts via settings");
+      return;
+    }
+    const defaults = self.DEFAULT_AHLAN_ACCOUNTS || [];
+    if (defaults.length === 0) return;
+    await chrome.storage.local.set({ ahlan_accounts: defaults, autoLogin: true });
+    await logActivity({ status: "seeded", msg: `seeded ${defaults.length} default accounts from bundled file` });
+    console.log(`[ahlan-bg] seeded ${defaults.length} default accounts`);
+  } catch (e) {
+    console.warn("[ahlan-bg] seed failed:", e);
+  }
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
-  // Slow safety-net poll every 5 minutes for orders not initiated via dashboard
   chrome.alarms.create("safety-poll", { periodInMinutes: 5 });
   await chrome.storage.local.set({ installedAt: Date.now() });
-  await logActivity({ status: "installed", msg: "extension installed (v1.0)" });
+  await seedDefaultAccountsIfEmpty();
+  await logActivity({ status: "installed", msg: "extension installed (v1.1.1)" });
 });
 chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create("safety-poll", { periodInMinutes: 5 });

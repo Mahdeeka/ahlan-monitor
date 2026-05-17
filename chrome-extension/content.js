@@ -360,15 +360,25 @@ async function runFlow(order) {
 
   if (queueToken === "__AUTH__") {
     hudUpdateLast("err");
+    // 🔑 KEY FIX: try auto-login here too (was only in the initial /Signin
+    //  check before — that's why even with accounts saved, the bot got
+    //  stuck here when Find Tickets bounced you mid-flow).
+    const auto = await tryAutoLogin(order, hudStatus, hudStep, hudAction);
+    if (auto === "navigated") return; // auto-login won, navigating
+
     hudStatus(`⚠️  Sign in below to buy ${order.title || order.slug}`, "warn");
     hudAction(`
       <div style="background:rgba(252,211,77,0.12);border:1px solid rgba(252,211,77,0.4);border-radius:6px;padding:8px 10px;color:#fde047;font-size:11px;line-height:1.5;">
         <strong>👇 Sign in to ahlan.sa below.</strong><br>
-        We clicked Find Tickets but you're not signed in. Log in and we'll auto-resume your order.<br>
+        ${auto === "no_creds" ? `Add stored accounts in extension settings to auto-login.`
+          : auto === "all_used" ? `All 10 stored accounts are used. Reset usage in settings.`
+          : auto === "failed" ? `Auto-login failed for every stored account — check passwords in settings.`
+          : `We clicked Find Tickets but you're not signed in.`}<br>
+        After login, this tab will resume your order.<br>
         <em style="color:#94a3b8;">Don't close this tab.</em>
       </div>
     `);
-    report("auth_error", { error_msg: "Find Tickets click bounced to /Signin" });
+    report("auth_error", { error_msg: "Find Tickets bounced to /Signin", notes: `auto-login: ${auto}` });
     let lastUrl = location.href;
     const iv = setInterval(() => {
       if (location.href !== lastUrl) {

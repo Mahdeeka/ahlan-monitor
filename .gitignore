@@ -32,3 +32,6 @@ Thumbs.db
 .vercel
 .env*.local
 .snapshot_secret.txt
+
+# Chrome extension — never commit credentials
+chrome-extension/default_accounts.js
