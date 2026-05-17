@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeft, Terminal, Key, ShoppingCart, AlertTriangle, ExternalLink } from "lucide-react";
+import { ArrowLeft, Terminal, ShoppingCart, AlertTriangle, CheckCircle2, PlayCircle } from "lucide-react";
 
 export default function SetupPage() {
   return (
@@ -12,7 +12,7 @@ export default function SetupPage() {
           <Terminal className="w-6 h-6 text-indigo-400" />
           <div>
             <div className="text-base sm:text-xl font-bold tracking-tight">Worker setup guide</div>
-            <div className="text-[10px] sm:text-xs text-slate-400">Wire up your local bot to the dashboard buy queue</div>
+            <div className="text-[10px] sm:text-xs text-slate-400">2-minute setup — wires dashboard clicks to your ahlan_bot</div>
           </div>
         </div>
       </header>
@@ -22,106 +22,101 @@ export default function SetupPage() {
         <section className="glass rounded-2xl p-5 space-y-3">
           <h2 className="text-base font-bold flex items-center gap-2 text-emerald-300">
             <ShoppingCart className="w-4 h-4" />
-            How it works
+            What happens when you click Buy
           </h2>
           <ol className="space-y-1.5 text-slate-300 list-decimal list-inside">
-            <li>You click <code className="text-indigo-300 bg-slate-800/60 px-1 rounded">Buy</code> in a match's detail modal.</li>
-            <li>Dashboard inserts an order into the queue (Postgres).</li>
-            <li>Your local <code className="text-indigo-300 bg-slate-800/60 px-1 rounded">buy_worker.py</code> polls every 2s, claims the order, and calls your existing <code className="text-indigo-300 bg-slate-800/60 px-1 rounded">ahlan_multi_bot.py</code>.</li>
-            <li>Bot reports outcome back; status appears live on the queue page.</li>
+            <li>Dashboard inserts a row into the buy queue (Postgres).</li>
+            <li>Worker on your PC polls every 2s, claims the order.</li>
+            <li>Worker subprocesses <code className="text-indigo-300 bg-slate-800/60 px-1 rounded">ahlan_bot/ahlan_bot_invoke.py &lt;slug&gt;</code>.</li>
+            <li>Your bot opens a Chrome window, picks the best available category,
+                logs in with a fresh empty account, adds max tickets to cart,
+                <strong> parks at the payment page</strong>.</li>
+            <li>You confirm the Visa payment manually (1 click).</li>
           </ol>
           <div className="text-xs text-slate-400 leading-relaxed border-l-2 border-emerald-500/30 pl-3 mt-2">
-            Your ahlan.sa credentials never leave your machine. The dashboard
-            only knows what slug + category + qty you asked for.
+            Your ahlan.sa creds never leave your machine. The dashboard only sees
+            the order metadata (slug + category + qty). Payment is always human.
           </div>
         </section>
 
         <section className="glass rounded-2xl p-5 space-y-3">
           <h2 className="text-base font-bold flex items-center gap-2 text-yellow-300">
-            <Key className="w-4 h-4" />
-            Step 1 — Add the shared token
+            <CheckCircle2 className="w-4 h-4" />
+            What's already done
           </h2>
-          <p className="text-slate-300">
-            On Vercel (Project Settings → Environment Variables), add:
-          </p>
-          <pre className="bg-slate-900/60 border border-white/5 rounded-lg p-3 text-xs overflow-x-auto"><code>BUY_WORKER_TOKEN={"<a-long-random-string>"}</code></pre>
-          <p className="text-slate-400 text-xs">
-            Pick anything secret, e.g. <code className="bg-slate-800/60 px-1 rounded">openssl rand -hex 32</code> output.
-            Then redeploy.
-          </p>
+          <ul className="space-y-1.5 text-slate-300 list-disc list-inside text-sm">
+            <li><code className="bg-slate-800/60 px-1 rounded">ahlan_bot/ahlan_bot_invoke.py</code> — one-shot wrapper that calls your existing bot's <code className="bg-slate-800/60 px-1 rounded">run_one_session()</code>.</li>
+            <li><code className="bg-slate-800/60 px-1 rounded">ahlan_bot/start_worker.bat</code> — double-click launcher with all env vars set.</li>
+            <li><code className="bg-slate-800/60 px-1 rounded">ahlan_bot/start_worker_dry.bat</code> — same, but with DRY_RUN=1 (logs only, no real bot launch).</li>
+            <li><code className="bg-slate-800/60 px-1 rounded">BUY_WORKER_TOKEN</code> stored on Vercel + baked into the .bat files.</li>
+            <li><code className="bg-slate-800/60 px-1 rounded">/api/buy/*</code> endpoints live on the dashboard.</li>
+          </ul>
         </section>
 
-        <section className="glass rounded-2xl p-5 space-y-3">
-          <h2 className="text-base font-bold flex items-center gap-2 text-indigo-300">
-            <Terminal className="w-4 h-4" />
-            Step 2 — Run the worker on your PC
+        <section className="glass rounded-2xl p-5 space-y-3 border border-emerald-500/20">
+          <h2 className="text-base font-bold flex items-center gap-2 text-emerald-300">
+            <PlayCircle className="w-4 h-4" />
+            How to start the worker
           </h2>
-          <p className="text-slate-300">
-            Get the worker script from the repo (<code className="bg-slate-800/60 px-1 rounded">scripts/buy_worker.py</code>),
-            then in PowerShell / Terminal:
-          </p>
-          <pre className="bg-slate-900/60 border border-white/5 rounded-lg p-3 text-xs overflow-x-auto"><code>{`# Windows PowerShell
-$env:DASHBOARD_URL = "https://ahlanweb.vercel.app"
-$env:BUY_WORKER_TOKEN = "the same long string"
-$env:WORKER_ID = "$env:COMPUTERNAME"
-python scripts/buy_worker.py
-
-# macOS / Linux
-export DASHBOARD_URL=https://ahlanweb.vercel.app
-export BUY_WORKER_TOKEN=...
-export WORKER_ID=$(hostname)
-python scripts/buy_worker.py`}</code></pre>
-          <p className="text-slate-400 text-xs">
-            You should see <code className="bg-slate-800/60 px-1 rounded">🛒 buy_worker started</code> followed by polling logs.
-          </p>
+          <div className="text-slate-300 space-y-2">
+            <div>
+              <div className="text-xs text-slate-400 mb-1">First time — test with no real buys</div>
+              <pre className="bg-slate-900/60 border border-white/5 rounded-lg p-3 text-xs overflow-x-auto"><code>Double-click  C:\Users\mahdi\OneDrive\Documents\ahlan_bot\start_worker_dry.bat</code></pre>
+              <div className="text-[11px] text-slate-500 mt-1">
+                In the dashboard, open any match → Buy → check{" "}
+                <Link href="/buy-queue" className="underline text-indigo-300">/buy-queue</Link> for "skipped (DRY_RUN=1)".
+              </div>
+            </div>
+            <div className="pt-2">
+              <div className="text-xs text-slate-400 mb-1">Real mode — actually launch ahlan_bot</div>
+              <pre className="bg-slate-900/60 border border-white/5 rounded-lg p-3 text-xs overflow-x-auto"><code>Double-click  C:\Users\mahdi\OneDrive\Documents\ahlan_bot\start_worker.bat</code></pre>
+              <div className="text-[11px] text-slate-500 mt-1">
+                The console will log activity. When you click Buy in the dashboard, a Chrome
+                window pops up with the bot doing its thing.
+              </div>
+            </div>
+          </div>
         </section>
 
-        <section className="glass rounded-2xl p-5 space-y-3">
-          <h2 className="text-base font-bold text-pink-300">Step 3 — Wire it to your bot</h2>
-          <p className="text-slate-300">
-            Open <code className="bg-slate-800/60 px-1 rounded">scripts/buy_worker.py</code> and edit the <code className="bg-slate-800/60 px-1 rounded">call_bot()</code> function:
-          </p>
-          <pre className="bg-slate-900/60 border border-white/5 rounded-lg p-3 text-xs overflow-x-auto"><code>{`def call_bot(slug, category, qty, max_price=None):
-    # Replace this stub with a call into your ahlan_multi_bot
-    from ahlan_multi_bot import purchase
-    result = purchase(
-        slug=slug, category=category, qty=qty,
-        max_price_sar=max_price,
-    )
-    return {
-        "status": result.ok and "success" or "failed",
-        "receipt_url": result.receipt_url,
-        "notes": result.message,
-    }`}</code></pre>
-          <p className="text-slate-400 text-xs">
-            Your bot's <code className="bg-slate-800/60 px-1 rounded">purchase()</code> just needs to accept slug + category + qty and return outcome.
-            Recognized status values: <code className="bg-slate-800/60 px-1 rounded">success</code>, <code className="bg-slate-800/60 px-1 rounded">failed</code>, <code className="bg-slate-800/60 px-1 rounded">sold_out</code>, <code className="bg-slate-800/60 px-1 rounded">auth_error</code>, <code className="bg-slate-800/60 px-1 rounded">skipped</code>.
-          </p>
-        </section>
-
-        <section className="glass rounded-2xl p-5 space-y-3">
+        <section className="glass rounded-2xl p-5 space-y-3 border border-amber-500/30">
           <h2 className="text-base font-bold flex items-center gap-2 text-amber-300">
             <AlertTriangle className="w-4 h-4" />
-            Safety best-practices
+            Important behavior to know
           </h2>
-          <ul className="space-y-1.5 text-slate-300 list-disc list-inside text-xs">
-            <li>Run the worker in the same OS user account as your saved browser session — easier auth.</li>
-            <li>Always pass a <code className="bg-slate-800/60 px-1 rounded">max_price_sar</code> when you queue, so a price-tier swap can't blindside you.</li>
-            <li>Cancel pending orders any time from the queue page (worker won't claim them).</li>
-            <li>The worker re-claims stale orders (claimed but not completed in 2 min) — safe to crash & restart.</li>
-            <li>If you want to disable buying entirely, remove the <code className="bg-slate-800/60 px-1 rounded">BUY_WORKER_TOKEN</code> env on Vercel and the queue refuses to be polled.</li>
-            <li>This whole pipeline is for personal use against tickets you intend to use — automated bulk purchasing for resale likely violates ahlan.sa ToS and is your responsibility.</li>
+          <ul className="space-y-2 text-slate-300 list-disc list-inside text-xs leading-relaxed">
+            <li><strong>One click = one full max-qty cart.</strong> Your bot maxes out
+              <code className="bg-slate-800/60 px-1 rounded">max_per_order</code> on the best
+              available category. The dashboard's qty field controls how many <em>accounts</em> to use:
+              qty 1-4 = 1 account, qty 5-8 = 2 accounts, etc. (configurable via
+              <code className="bg-slate-800/60 px-1 rounded">ACCOUNTS_PER_QTY</code> env var).</li>
+            <li><strong>Category preference is honored.</strong> If you click Buy on "CAT 2"
+              specifically, the bot is restricted to CAT 2 (won't sneak you a Premium).
+              If you don't specify, default priority is Premium → CAT 1 → CAT 2.</li>
+            <li><strong>Browsers stay open for 20 min</strong> after the bot finishes parking
+              tickets in the cart, giving you time to pay. After that they auto-close.</li>
+            <li><strong>Empty-account pool matters.</strong> The bot uses an account only if it
+              has no existing tickets. Make sure <code className="bg-slate-800/60 px-1 rounded">ahlan_accounts.txt</code>
+              has more accounts than the qty you're buying — otherwise you'll see
+              "no_empty_accounts" failures in the queue.</li>
+            <li><strong>Multiple clicks queue up.</strong> If you click Buy 3 times in a row,
+              the worker handles them one at a time. The order page shows their status live.</li>
+            <li><strong>Auto-buy on restock</strong> isn't enabled yet — the
+              <code className="bg-slate-800/60 px-1 rounded">auto_buy_rules</code> table exists
+              but no rules will fire until I build the rule UI. Say the word when you want it.</li>
           </ul>
         </section>
 
         <section className="glass rounded-2xl p-5 space-y-3">
-          <h2 className="text-base font-bold text-cyan-300">Optional — Auto-buy on restock</h2>
+          <h2 className="text-base font-bold text-cyan-300">Run unattended (optional)</h2>
           <p className="text-slate-300 text-xs leading-relaxed">
-            Want the bot to fire WITHOUT you clicking? Coming next: create a rule like
-            <em> &ldquo;If FINAL Premium restocks AND price &lt; SAR 250, auto-queue qty 2&rdquo;</em>.
-            Tell me when you want this and I&apos;ll wire it up — table already exists
-            (<code className="bg-slate-800/60 px-1 rounded">auto_buy_rules</code>).
+            To keep the worker running 24/7 even when you're not logged in:
           </p>
+          <ol className="text-xs space-y-1 text-slate-400 list-decimal list-inside">
+            <li>Open <code className="bg-slate-800/60 px-1 rounded">taskschd.msc</code></li>
+            <li>Create Basic Task → "ahlan worker" → Trigger: At log on → Action: Start a program → Browse to start_worker.bat</li>
+            <li>Properties → Conditions: uncheck "Start only if on AC power" → Settings: check "If the task fails, restart every 1 minute"</li>
+            <li>Right-click → Run. It now survives reboots.</li>
+          </ol>
         </section>
 
         <Link href="/buy-queue" className="block text-center text-xs text-indigo-300 hover:text-indigo-200 underline pb-8">

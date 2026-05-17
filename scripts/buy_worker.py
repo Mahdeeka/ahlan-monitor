@@ -55,39 +55,99 @@ S = requests.Session()
 S.headers.update(HEADERS)
 
 
-# ─────────── EDIT THIS — wire to your ahlan_multi_bot ───────────────────
+# ─────────── ahlan_bot integration ──────────────────────────────────────
+import subprocess, json as _json
+
+# Path to the user's ahlan_bot directory. Override with env if it lives somewhere else.
+AHLAN_BOT_DIR = os.environ.get("AHLAN_BOT_DIR", r"C:\Users\mahdi\OneDrive\Documents\ahlan_bot")
+AHLAN_BOT_INVOKE = os.path.join(AHLAN_BOT_DIR, "ahlan_bot_invoke.py")
+# How many accounts to use per dashboard order. Each account adds max-per-order
+# tickets to its own cart. qty=1 → 1 account, qty=8 → 2 accounts (~4 each), etc.
+ACCOUNTS_PER_QTY = float(os.environ.get("ACCOUNTS_PER_QTY", "4"))
+
 def call_bot(slug: str, category: str, qty: int, max_price_sar: Optional[int]) -> dict:
-    """
-    Hand off to your local ahlan_multi_bot purchase function.
-
-    Should return a dict like:
-        {"status": "success" | "failed" | "sold_out" | "auth_error" | "skipped",
-         "error_msg": str | None,
-         "receipt_url": str | None,
-         "notes": str | None}
-
-    Default implementation is a SAFE STUB that just logs and returns "skipped".
-    Replace it with a call into your ahlan_multi_bot:
-
-        from ahlan_multi_bot import purchase
-        result = purchase(slug=slug, category=category, qty=qty, max_price_sar=max_price_sar)
-        return {
-            "status":      "success" if result.ok else "failed",
-            "error_msg":   getattr(result, "error", None),
-            "receipt_url": getattr(result, "receipt_url", None),
-            "notes":       getattr(result, "notes", None),
-        }
-    """
+    """Hand off to ahlan_bot/ahlan_bot_invoke.py and parse its __BUY_RESULT__ line."""
     if DRY_RUN:
         print(f"  🧪 DRY_RUN: would buy {qty}x {category!r} of {slug!r} cap={max_price_sar}")
         return {"status": "skipped", "notes": "DRY_RUN=1"}
 
-    # ⚠️  STUB — replace the block below with your real bot integration.
-    print(f"  ⚠️  STUB call_bot() — buy not actually performed.")
-    print(f"       Replace call_bot() in {__file__} with your ahlan_multi_bot integration.")
+    if not os.path.exists(AHLAN_BOT_INVOKE):
+        return {
+            "status": "failed",
+            "error_msg": f"ahlan_bot_invoke.py not found at {AHLAN_BOT_INVOKE}. Set AHLAN_BOT_DIR env var.",
+        }
+
+    # Compute # accounts based on qty (round up). 1 account per ~4 tickets.
+    num_users = max(1, int((qty + ACCOUNTS_PER_QTY - 1) // ACCOUNTS_PER_QTY))
+
+    args = [sys.executable, AHLAN_BOT_INVOKE, slug, str(num_users)]
+    if category:
+        args.append(category)
+
+    print(f"  ▶ launching: {' '.join(args[1:])}  (cwd={AHLAN_BOT_DIR})")
+
+    # Run the bot. Don't capture stdout (let the user see the live logs in
+    # their terminal). Instead we tee — capture too so we can parse the
+    # __BUY_RESULT__ marker line at the end.
+    try:
+        proc = subprocess.Popen(
+            args,
+            cwd=AHLAN_BOT_DIR,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except Exception as e:
+        return {"status": "failed", "error_msg": f"subprocess.Popen: {e}"}
+
+    result_line = None
+    # Stream output to our stdout AND capture result line
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        if line.startswith("__BUY_RESULT__"):
+            result_line = line[len("__BUY_RESULT__"):].strip()
+            # Once we have the result line, we don't need to wait for the
+            # bot's payment-hold sleep — leave the process running so the
+            # browser stays open for the human to pay, but report success NOW.
+            break
+
+    # Don't wait() — bot will hold browsers open. Return result immediately.
+    # The browsers parked at the payment page are now the user's responsibility.
+
+    if not result_line:
+        # Process exited without emitting result line — wait briefly for exit code
+        try:
+            rc = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            rc = "running"
+        return {
+            "status": "failed",
+            "error_msg": f"bot exited without __BUY_RESULT__ (rc={rc})",
+        }
+
+    try:
+        data = _json.loads(result_line)
+    except Exception as e:
+        return {"status": "failed", "error_msg": f"bad result JSON: {e} :: {result_line[:200]}"}
+
+    # Translate to the worker's status vocabulary
+    bot_status = data.get("status", "failed")
+    note_parts = []
+    if data.get("successes"):
+        note_parts.append(f"{data['successes']} account(s) parked at payment page")
+    if data.get("category"):
+        note_parts.append(f"category: {data['category']}")
+    if data.get("failures"):
+        note_parts.append(f"{data['failures']} failed")
+
     return {
-        "status": "skipped",
-        "notes":  "Worker stub — edit call_bot() to wire ahlan_multi_bot",
+        "status":    "success" if bot_status == "success" else "failed",
+        "error_msg": data.get("error") if bot_status != "success" else None,
+        "notes":     " · ".join(note_parts) or None,
     }
 
 
