@@ -1,40 +1,68 @@
 /**
  * content.js — runs in every ahlan.sa page.
  *
- * On load, asks the background worker: "do you have an order for this tab?"
- *   - If no order: do nothing (user is just browsing).
- *   - If order: check auth status, then drive the cart flow.
+ * On load, asks background: "do you have an order for this tab?"
+ *   - No order: do nothing (user is just browsing).
+ *   - Order: API-direct checkout, then land on PayTabs payment page.
  *
- * Flow (best-effort, conservative — stops at payment):
- *   1. /events/details?event=<slug>  → click "Find Tickets"
- *   2. category picker page          → click the requested category
- *   3. qty selector                  → set qty
- *   4. add-to-cart confirm           → click confirm
- *   5. cart review / checkout        → stop and ping background
+ * Flow (API, not UI — same as ahlan_buy_max.buy_for_user_api):
+ *   1. Confirm user is logged in (token cookie present).
+ *   2. Click "Find Tickets" once (this triggers the SPA to issue a
+ *      queue-token into localStorage). It's the only DOM step.
+ *   3. Wait for `persist:nextjs-sitecore-root → event.queueToken`.
+ *   4. fetch /api/ticketing/eventDetail?slug=<slug> → ticket_id matching
+ *      the requested category (or best by priority), team_id, max_per_order.
+ *   5. fetch POST /api/ticketing/nonSeatedCheckout with queue-token header
+ *      → response.data.redirect_url is the PayTabs payment URL.
+ *   6. window.location = redirect_url. User sees payment page, enters Visa.
  *
- * NEVER clicks any final "Pay" or "Confirm Order" button. Always stops at
- * the payment-review screen so the user enters Visa details themselves.
+ * NEVER submits payment. The tab simply lands on PayTabs ready for human.
  */
 (async () => {
-  if (window.__ahlan_ext_loaded) return; // dedupe — content scripts can re-fire on SPA nav
+  if (window.__ahlan_ext_loaded) return;
   window.__ahlan_ext_loaded = true;
 
-  // 1. Ask background if this tab has an order
   let order = null;
   try {
     const r = await chrome.runtime.sendMessage({ type: "content_ready" });
     order = r?.order || null;
-  } catch (e) {
-    return; // extension context invalidated
-  }
+  } catch (e) { return; }
   if (!order) return; // user is just browsing — don't interfere
 
   console.log("[Ahlan Ext] order received:", order);
 
-  // ── Helpers ──────────────────────────────────────────────────────────
+  // ── helpers ──────────────────────────────────────────────────────────
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-  async function waitFor(predicate, { timeout = 15000, interval = 250 } = {}) {
+  const report = (status, opts = {}) => {
+    try {
+      chrome.runtime.sendMessage({
+        type: "content_status", status,
+        error_msg: opts.error_msg, notes: opts.notes,
+      });
+    } catch (e) {/* */}
+  };
+  function hasTokenCookie() {
+    return document.cookie.split("; ").some(c => c.startsWith("token=") && c.length > 10);
+  }
+  function findFindTicketsBtn() {
+    const all = document.querySelectorAll("a, button, [role='button']");
+    for (const el of all) {
+      const t = (el.textContent || "").trim().toLowerCase();
+      if (t === "find tickets" || t.includes("find tickets")) return el;
+    }
+    return null;
+  }
+  function readQueueToken() {
+    try {
+      const raw = localStorage.getItem("persist:nextjs-sitecore-root");
+      if (!raw) return null;
+      const root = JSON.parse(raw);
+      if (!root.event) return null;
+      const ev = typeof root.event === "string" ? JSON.parse(root.event) : root.event;
+      return ev.queueToken || null;
+    } catch (e) { return null; }
+  }
+  async function waitFor(predicate, { timeout = 8000, interval = 100 } = {}) {
     const t0 = Date.now();
     while (Date.now() - t0 < timeout) {
       const v = predicate();
@@ -44,166 +72,153 @@
     return null;
   }
 
-  function findButtonByText(text) {
-    text = text.toLowerCase().trim();
-    const all = document.querySelectorAll("button, a, [role='button']");
-    for (const el of all) {
-      const t = (el.textContent || "").toLowerCase().trim();
-      if (t === text || t.includes(text)) return el;
-    }
-    return null;
-  }
-
-  function isOnSignIn() {
-    return location.pathname.toLowerCase().includes("/signin")
-        || location.pathname.toLowerCase().includes("/login")
-        || !!findButtonByText("Login");
-  }
-
-  function report(status, opts = {}) {
-    try {
-      chrome.runtime.sendMessage({
-        type: "content_status",
-        status,
-        error_msg: opts.error_msg,
-        notes: opts.notes,
-      });
-    } catch (e) { /* */ }
-  }
-
-  // ── Step 0: auth check ───────────────────────────────────────────────
-  await sleep(1500); // let the SPA hydrate
-  if (isOnSignIn()) {
-    report("auth_error", { error_msg: "Not logged in to ahlan.sa", notes: "Sign in and re-queue the order." });
+  // ── 0. Wait for SPA hydrate + check auth ─────────────────────────────
+  await sleep(1500);
+  if (!hasTokenCookie() || location.pathname.toLowerCase().includes("/signin")) {
+    report("auth_error", {
+      error_msg: "Not logged in to ahlan.sa",
+      notes: "Sign in once at https://www.ahlan.sa, then re-queue the order.",
+    });
     return;
   }
 
-  // ── Step 1: Find Tickets ─────────────────────────────────────────────
-  const findBtn = await waitFor(() => findButtonByText("Find Tickets"), { timeout: 8000 });
+  // ── 1. Click Find Tickets to mint the queue-token ───────────────────
+  let findBtn = await waitFor(findFindTicketsBtn, { timeout: 8000 });
   if (!findBtn) {
-    // Could already be past this step (SPA might have advanced), or page didn't load.
-    // Don't fail — let the next step check.
-  } else {
-    findBtn.click();
-    await sleep(2000);
+    report("failed", {
+      error_msg: "Find Tickets button not found on page",
+      notes: `URL: ${location.href}`,
+    });
+    return;
   }
+  findBtn.click();
 
-  // After clicking, ahlan.sa redirects to a category-picker URL.
-  // We need to wait for the new page to render.
-  await sleep(2000);
+  // ── 2. Wait for queue-token in localStorage ──────────────────────────
+  const queueToken = await waitFor(readQueueToken, { timeout: 8000 });
+  if (!queueToken) {
+    report("failed", {
+      error_msg: "queue-token never appeared",
+      notes: "Find Tickets click did not initialize the queue. Try refreshing.",
+    });
+    return;
+  }
+  console.log("[Ahlan Ext] queue-token:", queueToken.slice(0, 16) + "…");
 
-  // If we got bounced to sign-in, bail
-  if (isOnSignIn()) {
-    report("auth_error", { error_msg: "Sign-in required after clicking Find Tickets" });
+  // ── 3. fetch eventDetail to map category name → ticket_id, team_id ──
+  let eventDetail;
+  try {
+    const r = await fetch(
+      `/api/ticketing/eventDetail?slug=${encodeURIComponent(order.slug)}&language=en`,
+      { credentials: "include", headers: { Accept: "application/json" } }
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    eventDetail = await r.json();
+  } catch (e) {
+    report("failed", { error_msg: `eventDetail fetch failed: ${e.message}` });
     return;
   }
 
-  // ── Step 2: pick category ────────────────────────────────────────────
-  // The dashboard's order.category is e.g. "CAT 2" or "Premium".
-  // Look for a card/button with that exact text. Ahlan uses h2/h3/h4/span
-  // for category names; we walk up to find a clickable parent.
-  const wantedCat = (order.category || "").toLowerCase().trim();
-  if (wantedCat) {
-    const catEl = await waitFor(() => {
-      const candidates = document.querySelectorAll(
-        "h1, h2, h3, h4, h5, button, [role='button'], .ticket-category, [class*='category'], [class*='Category']"
-      );
-      for (const el of candidates) {
-        const t = (el.textContent || "").toLowerCase().trim();
-        if (t === wantedCat) {
-          // walk up to find a clickable ancestor
-          let n = el;
-          for (let i = 0; i < 6 && n; i++) {
-            if (n.tagName === "BUTTON" || n.tagName === "A" || n.getAttribute("role") === "button") return n;
-            if (n.onclick) return n;
-            n = n.parentElement;
-          }
-          return el;
-        }
-      }
-      return null;
-    }, { timeout: 10000 });
-
-    if (catEl) {
-      catEl.click();
-      await sleep(1500);
-    } else {
-      report("failed", { error_msg: `Couldn't find category "${order.category}" on page`,
-                         notes: `Page URL: ${location.href}` });
+  // Pick the right ticket. Prefer the dashboard-requested category, fall back
+  // to Premium > CAT 1 > CAT 2.
+  const tickets = eventDetail.event_tickets || [];
+  const PRIORITY = ["Premium", "CAT 1", "CAT 2"];
+  const wanted = (order.category || "").trim().toLowerCase();
+  let pick = null;
+  if (wanted) {
+    pick = tickets.find(t => (t.title || "").trim().toLowerCase() === wanted);
+    if (pick && (Number(pick.remaining) || 0) === 0) {
+      report("sold_out", {
+        error_msg: `${order.category} is sold out`,
+        notes: `Other categories may be available — re-queue without specifying category to use priority.`,
+      });
       return;
     }
   }
-
-  // ── Step 3: set qty ──────────────────────────────────────────────────
-  // Try to find a +/- counter or a qty <input>. Increment until we reach
-  // target qty. If we can't find it, just leave default qty.
-  const targetQty = Math.max(1, parseInt(String(order.qty || 1), 10));
-  let qtyOk = false;
-  const qtyInput = document.querySelector(
-    "input[type='number'][name*='quantity' i], input[name*='qty' i], input[id*='qty' i], input[type='number']"
-  );
-  if (qtyInput) {
-    qtyInput.focus();
-    qtyInput.value = String(targetQty);
-    qtyInput.dispatchEvent(new Event("input", { bubbles: true }));
-    qtyInput.dispatchEvent(new Event("change", { bubbles: true }));
-    qtyOk = true;
-    await sleep(500);
-  } else {
-    // Try +/- buttons
-    const plusBtn = Array.from(document.querySelectorAll("button, [role='button']"))
-      .find(b => {
-        const t = (b.textContent || "").trim();
-        const aria = (b.getAttribute("aria-label") || "").toLowerCase();
-        return t === "+" || aria.includes("increase") || aria.includes("add") || aria.includes("plus");
-      });
-    if (plusBtn) {
-      for (let i = 1; i < targetQty; i++) {
-        plusBtn.click();
-        await sleep(200);
-      }
-      qtyOk = true;
+  if (!pick) {
+    for (const name of PRIORITY) {
+      const c = tickets.find(t => (t.title || "").trim() === name);
+      if (c && (Number(c.remaining) || 0) > 0) { pick = c; break; }
     }
   }
-
-  // ── Step 4: add to cart / proceed ────────────────────────────────────
-  await sleep(800);
-  const addBtn = await waitFor(() =>
-    findButtonByText("Add to cart") ||
-    findButtonByText("Buy now") ||
-    findButtonByText("Proceed") ||
-    findButtonByText("Continue") ||
-    findButtonByText("Checkout"),
-    { timeout: 6000 }
-  );
-  if (addBtn) {
-    addBtn.click();
-    await sleep(2500);
+  if (!pick) {
+    report("sold_out", { error_msg: "No public categories available", notes: "All Premium/CAT 1/CAT 2 sold out." });
+    return;
   }
 
-  // ── Step 5: stop at payment review ───────────────────────────────────
-  // Don't click anything that looks like final payment.
-  const payIndicators = [
-    "card number", "credit card", "visa", "mastercard", "cvc", "cvv",
-    "expiry", "expires", "billing", "complete purchase", "place order"
-  ];
-  const onPaymentPage = payIndicators.some(t => document.body.textContent?.toLowerCase().includes(t));
+  const ticketId = pick._id;
+  const catName = (pick.title || "").trim();
+  const maxPerOrder = Math.max(1, Number(pick.max_per_order) || 1);
+  const remaining = Math.max(0, Number(pick.remaining) || 0);
+  const requestedQty = Math.max(1, Number(order.qty) || 1);
+  const qty = Math.min(requestedQty, maxPerOrder, remaining);
 
-  if (onPaymentPage) {
-    report("success", {
-      notes: `Cart parked at payment page (${location.pathname}). Enter Visa details to complete.`,
+  const teamId = (eventDetail.home_team || {})._id;
+  console.log("[Ahlan Ext] picked:", catName, "qty:", qty, "ticketId:", ticketId);
+
+  // ── 4. POST nonSeatedCheckout ────────────────────────────────────────
+  const payload = {
+    event_id: order.slug,
+    redirect: `${location.origin}/payment-success?payData=`,
+    redirect_failed: `${location.origin}/ticket-summary?payData=`,
+    lang: "en",
+    payment_method: "credit_card",
+    promo_code: "",
+    favorite_team: teamId,
+    booking_source: "afc-web",
+    app_source: "afc",
+    tickets: [{ id: ticketId, qty }],
+  };
+
+  let coResp;
+  try {
+    const r = await fetch("/api/ticketing/nonSeatedCheckout", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "queue-token": queueToken,
+      },
+      body: JSON.stringify(payload),
     });
-    // Flash the page to grab attention
-    document.title = `🟢 PAY NOW · ${document.title}`;
-  } else if (qtyOk) {
-    // We made it past category/qty but no clear payment indicator — still likely success
-    report("success", {
-      notes: `Cart action completed. Current URL: ${location.pathname}`,
-    });
-  } else {
+    const ct = r.headers.get("content-type") || "";
+    const body = ct.includes("json") ? await r.json() : await r.text();
+    if (!r.ok) {
+      const bodyStr = typeof body === "string" ? body : JSON.stringify(body);
+      report("failed", { error_msg: `checkout HTTP ${r.status}`, notes: bodyStr.slice(0, 200) });
+      return;
+    }
+    coResp = body;
+  } catch (e) {
+    report("failed", { error_msg: `checkout fetch failed: ${e.message}` });
+    return;
+  }
+
+  // ── 5. Extract payment URL + redirect ────────────────────────────────
+  const data = coResp.data || coResp;
+  const paymentUrl =
+    data.redirect_url ||
+    (data.response && data.response.redirect_url) ||
+    null;
+  const orderId =
+    data.order_id ||
+    (data.response && data.response.order_id) ||
+    null;
+
+  if (!paymentUrl) {
     report("failed", {
-      error_msg: "Couldn't reach payment page",
-      notes: `Stopped at ${location.pathname}`,
+      error_msg: "no payment URL in checkout response",
+      notes: JSON.stringify(coResp).slice(0, 200),
     });
+    return;
   }
+
+  console.log("[Ahlan Ext] payment URL:", paymentUrl);
+  report("success", {
+    notes: `Cart created · ${catName} × ${qty}${orderId ? ` · order ${String(orderId).slice(-8)}` : ""} · redirecting to payment`,
+  });
+  document.title = `🟢 PAY NOW · ${catName} ×${qty}`;
+  // Give the success notification a moment to fire, then redirect
+  await sleep(400);
+  window.location.href = paymentUrl;
 })();

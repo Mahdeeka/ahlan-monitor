@@ -7,14 +7,15 @@ dashboard, this extension:
 1. Polls the dashboard's `/api/buy/queue` every minute.
 2. When a pending order shows up, opens a new tab to the right ahlan.sa
    event page using your existing login.
-3. Auto-clicks **Find Tickets** → category → quantity → Add to Cart.
-4. **Stops at the payment-review page** — never enters card details.
-5. Pings you with a Chrome notification: "Cart ready · go pay!"
-6. Reports outcome back to `/api/buy/complete`.
+3. Auto-clicks **Find Tickets** once (to obtain a queue-token).
+4. **Calls ahlan.sa's checkout API directly** with the queue-token —
+   no clicking through category, qty, or "add to cart" buttons.
+5. Lands you on the PayTabs payment page with the cart pre-filled.
+6. You enter Visa and submit. Done.
 
-Result: ~3 seconds from dashboard click to a Chrome window parked at
-payment, ready for you to confirm Visa with one tap. Your credentials
-never leave your machine.
+Result: ~3 seconds from dashboard click → PayTabs payment page open in
+Chrome. Your credentials never leave your machine. The extension never
+clicks Pay/Submit — that's your one tap.
 
 ---
 
