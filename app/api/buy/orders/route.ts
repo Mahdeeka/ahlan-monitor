@@ -14,7 +14,7 @@ export async function GET() {
   const now = Math.floor(Date.now() / 1000);
   const r = await sql`
     SELECT id, slug, title, category, qty, max_price_sar, status, worker_id,
-           result, error_msg, receipt_url, notes,
+           result, error_msg, receipt_url, notes, account_email, account_name,
            created_at, claimed_at, completed_at, auto_rule_id
     FROM buy_orders
     ORDER BY created_at DESC

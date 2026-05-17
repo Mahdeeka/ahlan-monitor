@@ -95,11 +95,17 @@ export async function initSchema() {
       created_at INTEGER NOT NULL,
       claimed_at INTEGER,
       completed_at INTEGER,
-      auto_rule_id BIGINT
+      auto_rule_id BIGINT,
+      account_email TEXT,
+      account_name TEXT
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS idx_buy_orders_status_created ON buy_orders(status, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_buy_orders_slug ON buy_orders(slug, created_at DESC)`;
+  // Older deployments may need the columns added if they pre-date this change
+  await sql`ALTER TABLE buy_orders ADD COLUMN IF NOT EXISTS account_email TEXT`;
+  await sql`ALTER TABLE buy_orders ADD COLUMN IF NOT EXISTS account_name TEXT`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_buy_orders_email ON buy_orders(account_email, created_at DESC)`;
 
   // Auto-buy rules — "if FINAL Premium restocks AND price < 250, auto-enqueue qty 2"
   await sql`

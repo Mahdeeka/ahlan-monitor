@@ -18,6 +18,8 @@ type Order = {
   error_msg: string | null;
   receipt_url: string | null;
   notes: string | null;
+  account_email: string | null;
+  account_name: string | null;
   created_at: number;
   claimed_at: number | null;
   completed_at: number | null;
@@ -101,6 +103,10 @@ export default function BuyQueuePage() {
               Click-to-buy orders waiting for your local bot
             </div>
           </div>
+          <Link href="/buy-queue/by-account"
+            className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25">
+            ✉ By account
+          </Link>
           <div className="flex-1" />
           <div className={clsx(
             "px-2.5 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5",
@@ -215,6 +221,11 @@ export default function BuyQueuePage() {
                     {flightTime != null && <span className="text-yellow-300">in flight {flightTime}s</span>}
                     {o.completed_at != null && (
                       <span>done in {(o.completed_at - o.created_at)}s</span>
+                    )}
+                    {o.account_email && (
+                      <span className="bg-emerald-500/15 text-emerald-300 px-1.5 rounded font-semibold">
+                        ✉ {o.account_email}
+                      </span>
                     )}
                   </div>
                   {o.error_msg && (

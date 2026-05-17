@@ -145,9 +145,11 @@ def call_bot(slug: str, category: str, qty: int, max_price_sar: Optional[int]) -
         note_parts.append(f"{data['failures']} failed")
 
     return {
-        "status":    "success" if bot_status == "success" else "failed",
-        "error_msg": data.get("error") if bot_status != "success" else None,
-        "notes":     " · ".join(note_parts) or None,
+        "status":        "success" if bot_status == "success" else "failed",
+        "error_msg":     data.get("error") if bot_status != "success" else None,
+        "notes":         " · ".join(note_parts) or None,
+        "account_email": data.get("account_email"),
+        "account_name":  data.get("account_name"),
     }
 
 
@@ -221,10 +223,12 @@ def main():
                 # Defensive: ensure status is a valid string
                 status = str(result.get("status", "failed"))
                 payload = {
-                    "status":       status,
-                    "error_msg":    result.get("error_msg"),
-                    "receipt_url":  result.get("receipt_url"),
-                    "notes":        result.get("notes"),
+                    "status":         status,
+                    "error_msg":      result.get("error_msg"),
+                    "receipt_url":    result.get("receipt_url"),
+                    "notes":          result.get("notes"),
+                    "account_email":  result.get("account_email"),
+                    "account_name":   result.get("account_name"),
                 }
                 complete_order(oid, payload)
                 marker = "✓" if status == "success" else "✗" if status in ("failed", "auth_error") else "·"

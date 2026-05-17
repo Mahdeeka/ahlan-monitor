@@ -47,11 +47,57 @@
       chrome.runtime.sendMessage({
         type: "content_status", status,
         error_msg: opts.error_msg, notes: opts.notes,
+        account_email: opts.account_email, account_name: opts.account_name,
       });
     } catch (e) {/* */}
   };
   function hasTokenCookie() {
     return document.cookie.split("; ").some(c => c.startsWith("token=") && c.length > 10);
+  }
+  function getTokenCookie() {
+    const c = document.cookie.split("; ").find(c => c.startsWith("token="));
+    return c ? c.slice("token=".length) : null;
+  }
+  function detectAccount() {
+    // 1) Try JWT decode from token cookie
+    const tok = getTokenCookie();
+    if (tok && tok.split(".").length >= 2) {
+      try {
+        const payload = JSON.parse(atob(tok.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+        const email = payload.email || payload.user_email || payload.sub || null;
+        const name = payload.name || payload.full_name || payload.firstName || null;
+        if (email && email.includes("@")) return { email, name };
+      } catch (e) {/* not a JWT */}
+    }
+    // 2) Try persist:nextjs-sitecore-root → user.email
+    try {
+      const raw = localStorage.getItem("persist:nextjs-sitecore-root");
+      if (raw) {
+        const root = JSON.parse(raw);
+        const candidates = ["user", "auth", "profile", "account"];
+        for (const k of candidates) {
+          if (!root[k]) continue;
+          const obj = typeof root[k] === "string" ? JSON.parse(root[k]) : root[k];
+          const email = obj.email || obj.user_email || obj?.user?.email || null;
+          const name = obj.name || obj?.user?.name || obj?.user?.first_name || null;
+          if (email && String(email).includes("@")) return { email, name };
+        }
+      }
+    } catch (e) {/* */}
+    // 3) Try other localStorage keys
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        const v = localStorage.getItem(key);
+        if (v && /"email"\s*:\s*"[^"]+@[^"]+"/.test(v)) {
+          const m = v.match(/"email"\s*:\s*"([^"]+@[^"]+)"/);
+          const n = v.match(/"(?:name|full_name|first_name)"\s*:\s*"([^"]+)"/);
+          if (m) return { email: m[1], name: n ? n[1] : null };
+        }
+      }
+    } catch (e) {/* */}
+    return { email: null, name: null };
   }
   function findFindTicketsBtn() {
     const all = document.querySelectorAll("a, button, [role='button']");
@@ -258,8 +304,13 @@
   sendTiming({ tPayUrl });
   console.log("[Ahlan Ext] payment URL:", paymentUrl,
               `(total: ${tPayUrl - tContentStart}ms in content.js)`);
+  // Detect the logged-in account email so the order is forever tied to it
+  const acc = detectAccount();
+  console.log("[Ahlan Ext] account detected:", acc);
   report("success", {
     notes: `Cart created · ${catName} × ${qty}${orderId ? ` · order ${String(orderId).slice(-8)}` : ""} · ${tPayUrl - tContentStart}ms in-tab`,
+    account_email: acc.email,
+    account_name: acc.name,
   });
   // Ask the background worker to bring this tab to the front — it's now ready for human.
   try { chrome.runtime.sendMessage({ type: "focus_tab" }); } catch {/* */}

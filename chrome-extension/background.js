@@ -177,11 +177,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const tabId = sender.tab?.id;
       const { [`order_${tabId}`]: order } = await chrome.storage.session.get([`order_${tabId}`]);
       if (!order) return sendResponse({});
-      const { status, error_msg, notes } = msg;
-      await completeOrder(order.id, { status, error_msg, notes });
-      await logActivity({ id: order.id, status, msg: notes || error_msg || "" });
+      const { status, error_msg, notes, account_email, account_name } = msg;
+      await completeOrder(order.id, { status, error_msg, notes, account_email, account_name });
+      await logActivity({
+        id: order.id, status,
+        msg: (account_email ? `[${account_email}] ` : "") + (notes || error_msg || ""),
+      });
       if (status === "success") {
-        notify(`Cart ready · #${order.id}`, `${order.title || order.slug} parked at payment — go pay!`, "alert");
+        notify(`Cart ready · #${order.id}`,
+               `${order.title || order.slug}${account_email ? ` (${account_email})` : ""} — go pay!`, "alert");
       } else if (status === "auth_error") {
         notify(`Login required`, `Sign in to ahlan.sa to process order #${order.id}`, "alert");
       } else {

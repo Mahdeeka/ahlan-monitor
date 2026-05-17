@@ -35,6 +35,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
   const { sql } = await import("@vercel/postgres");
   const now = Math.floor(Date.now() / 1000);
+  const email = body.account_email ? String(body.account_email).slice(0, 200) : null;
+  const aname = body.account_name  ? String(body.account_name).slice(0, 200) : null;
   const r = await sql`
     UPDATE buy_orders
     SET status = ${status},
@@ -42,9 +44,11 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         error_msg = ${body.error_msg || null},
         receipt_url = ${body.receipt_url || null},
         notes = ${body.notes || null},
+        account_email = COALESCE(${email}, account_email),
+        account_name  = COALESCE(${aname}, account_name),
         completed_at = ${now}
     WHERE id = ${id}
-    RETURNING id, status, completed_at
+    RETURNING id, status, completed_at, account_email
   `;
   if (r.rows.length === 0) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json({ ok: true, order: r.rows[0] });
