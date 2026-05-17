@@ -576,7 +576,13 @@ function CategoryBuyControls({
       }
       setOrderId(d.id);
       setState("queued");
-      setMsg(`Order #${d.id} queued for your bot`);
+      setMsg(`Order #${d.id} queued`);
+      // 🚀 Direct push to the Chrome/Edge extension if installed —
+      // bypasses the 30s polling fallback, fires in ~50ms.
+      if (typeof window !== "undefined" && (window as any).__ahlanExt?.sendBuyEnqueued) {
+        try { (window as any).__ahlanExt.sendBuyEnqueued(d.id); }
+        catch (e) { /* extension not installed or context invalidated */ }
+      }
     } catch (e: any) {
       setState("error");
       setMsg(e?.message || "Network error");

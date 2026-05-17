@@ -72,18 +72,32 @@
     return null;
   }
 
-  // ── 0. Wait for SPA hydrate + check auth ─────────────────────────────
-  await sleep(1500);
-  if (!hasTokenCookie() || location.pathname.toLowerCase().includes("/signin")) {
+  // ── 0. Quick auth check (no fixed sleep — re-check below if early) ──
+  if (location.pathname.toLowerCase().includes("/signin")) {
     report("auth_error", {
       error_msg: "Not logged in to ahlan.sa",
       notes: "Sign in once at https://www.ahlan.sa, then re-queue the order.",
     });
     return;
   }
+  if (!hasTokenCookie()) {
+    // Token cookie sometimes lands a beat after navigation finishes — wait briefly
+    const cookieOk = await waitFor(hasTokenCookie, { timeout: 2000, interval: 100 });
+    if (!cookieOk) {
+      report("auth_error", { error_msg: "Not logged in to ahlan.sa" });
+      return;
+    }
+  }
 
-  // ── 1. Click Find Tickets to mint the queue-token ───────────────────
-  let findBtn = await waitFor(findFindTicketsBtn, { timeout: 8000 });
+  // ── PARALLEL: kick off eventDetail fetch RIGHT NOW (doesn't need queue-token) ──
+  const eventDetailPromise = fetch(
+    `/api/ticketing/eventDetail?slug=${encodeURIComponent(order.slug)}&language=en`,
+    { credentials: "include", headers: { Accept: "application/json" } }
+  ).then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+   .catch(e => ({ _error: e.message }));
+
+  // ── 1. Click Find Tickets the moment it appears ─────────────────────
+  let findBtn = await waitFor(findFindTicketsBtn, { timeout: 8000, interval: 80 });
   if (!findBtn) {
     report("failed", {
       error_msg: "Find Tickets button not found on page",
@@ -93,8 +107,8 @@
   }
   findBtn.click();
 
-  // ── 2. Wait for queue-token in localStorage ──────────────────────────
-  const queueToken = await waitFor(readQueueToken, { timeout: 8000 });
+  // ── 2. Wait for queue-token (poll every 50ms — usually appears in <300ms) ──
+  const queueToken = await waitFor(readQueueToken, { timeout: 8000, interval: 50 });
   if (!queueToken) {
     report("failed", {
       error_msg: "queue-token never appeared",
@@ -104,17 +118,10 @@
   }
   console.log("[Ahlan Ext] queue-token:", queueToken.slice(0, 16) + "…");
 
-  // ── 3. fetch eventDetail to map category name → ticket_id, team_id ──
-  let eventDetail;
-  try {
-    const r = await fetch(
-      `/api/ticketing/eventDetail?slug=${encodeURIComponent(order.slug)}&language=en`,
-      { credentials: "include", headers: { Accept: "application/json" } }
-    );
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    eventDetail = await r.json();
-  } catch (e) {
-    report("failed", { error_msg: `eventDetail fetch failed: ${e.message}` });
+  // ── 3. Await the parallel eventDetail (likely already resolved) ─────
+  const eventDetail = await eventDetailPromise;
+  if (eventDetail._error) {
+    report("failed", { error_msg: `eventDetail fetch failed: ${eventDetail._error}` });
     return;
   }
 

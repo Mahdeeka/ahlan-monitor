@@ -141,6 +141,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return;
     }
+    if (msg?.type === "order_enqueued") {
+      // Direct push from dashboard — fire immediately, no wait for next alarm tick
+      await logActivity({ id: msg.orderId, status: "pushed", msg: "direct push from dashboard" });
+      await runPoll();
+      sendResponse({ ok: true });
+      return;
+    }
     if (msg?.type === "poll_now") {
       await runPoll();
       sendResponse({ ok: true });
@@ -171,14 +178,20 @@ async function runPoll() {
 }
 
 /* ─── alarms ──────────────────────────────────────────────────────────── */
+// MV3 minimum granularity is 30s (= 0.5 min). When dashboard is open and
+// pushes directly via window.postMessage, polling is irrelevant — this is
+// only the fallback for closed-dashboard scenarios (e.g. an auto-buy rule
+// firing while you're not looking at the tab).
+const POLL_PERIOD_MIN = 0.5;
+
 chrome.runtime.onInstalled.addListener(async () => {
-  chrome.alarms.create("poll-queue", { periodInMinutes: 1 });
+  chrome.alarms.create("poll-queue", { periodInMinutes: POLL_PERIOD_MIN });
   await chrome.storage.local.set({ installedAt: Date.now() });
-  await logActivity({ status: "installed", msg: "extension installed" });
+  await logActivity({ status: "installed", msg: "extension installed (v0.2 — push-enabled)" });
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create("poll-queue", { periodInMinutes: 1 });
+  chrome.alarms.create("poll-queue", { periodInMinutes: POLL_PERIOD_MIN });
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
