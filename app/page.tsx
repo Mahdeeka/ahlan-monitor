@@ -38,7 +38,20 @@ export default function Page() {
   const [browserPerm, setBrowserPerm] = useState<NotificationPermission | "default">("default");
   const [agoText, setAgoText] = useState("—");
   const [stale, setStale] = useState(false);
+  const [extState, setExtState] = useState<"unknown" | "missing" | "ready">("unknown");
   const prevEventsRef = useRef<Event[]>([]);
+
+  // Detect Chrome/Edge extension bridge
+  useEffect(() => {
+    function check() {
+      const ext = (window as any).__ahlanExt;
+      setExtState(ext?.installed ? "ready" : "missing");
+    }
+    check();
+    window.addEventListener("ahlan-ext-ready", check);
+    const t = setTimeout(check, 1500); // catch late injection
+    return () => { window.removeEventListener("ahlan-ext-ready", check); clearTimeout(t); };
+  }, []);
 
   /* ────────── Local storage ────────── */
   useEffect(() => {
@@ -395,6 +408,20 @@ export default function Page() {
             <StatCard label="🔴 Sold out"     value={state.summary.events_sold_out}     tone="red" />
             <StatCard label="Tickets left"   value={state.summary.total_remaining.toLocaleString()} sub={`${state.summary.pct_sold}% sold`} />
           </motion.div>
+        )}
+
+        {/* EXTENSION-MISSING BANNER */}
+        {extState === "missing" && (
+          <div className="mt-4 rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/10 to-yellow-500/5 p-3 flex items-center gap-3 text-xs">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+            <div className="flex-1">
+              <span className="text-amber-200 font-semibold">Ahlan Auto-Buy extension not detected.</span>
+              <span className="text-slate-400 ml-1">
+                Buy clicks will still queue, but no Chrome/Edge tab will auto-open.{" "}
+                <a href="/debug" className="underline hover:text-amber-300">Run diagnostics</a> · or in Edge: <code className="bg-slate-800/60 px-1 rounded">edge://extensions</code> → enable / reload Ahlan Auto-Buy → hard-refresh this page (Ctrl+Shift+R).
+              </span>
+            </div>
+          </div>
         )}
 
         {/* BULK-SALE ALERT BANNER */}

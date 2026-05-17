@@ -96,9 +96,12 @@ async function prearmTab(slug, ts) {
   }
   const url = `https://www.ahlan.sa/events/details?event=${encodeURIComponent(slug)}`;
   try {
-    const tab = await chrome.tabs.create({ url, active: false });
+    // active:true — user just clicked Buy, they WANT to see the tab open.
+    // (Earlier active:false was meant to "not steal focus" but made it look
+    // like nothing was happening.)
+    const tab = await chrome.tabs.create({ url, active: true });
     prearmedTabs.set(slug, { tabId: tab.id, ts: Date.now() });
-    await logActivity({ slug, status: "prearm", msg: `pre-opened tab ${tab.id} for ${slug}` });
+    await logActivity({ slug, status: "prearm", msg: `opened tab ${tab.id} for ${slug}` });
     return tab.id;
   } catch (e) {
     await logActivity({ slug, status: "prearm_err", msg: e.message });
@@ -133,15 +136,14 @@ async function handleOrder(order, pushedAt) {
       tab = await chrome.tabs.get(arm.tabId);
       prearmedTabs.delete(order.slug);
       wasPrearmed = true;
-      // Don't activate yet — wait until cart is ready (content.js will request focus on success)
+      // Bring it to front — user is waiting for visible progress
+      try { await chrome.tabs.update(arm.tabId, { active: true }); } catch {}
     } catch { tab = null; }
   }
   if (!tab) {
     const url = `https://www.ahlan.sa/events/details?event=${encodeURIComponent(order.slug)}`;
     try {
-      // Open in background so we don't steal focus mid-task.
-      // Content script flips to active=true when the cart is parked at payment.
-      tab = await chrome.tabs.create({ url, active: false });
+      tab = await chrome.tabs.create({ url, active: true });
     } catch (e) {
       await completeOrder(order.id, { status: "failed", error_msg: `tab open: ${e.message}` });
       await logActivity({ id: order.id, status: "failed", msg: `tab open failed: ${e.message}` });

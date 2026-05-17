@@ -591,10 +591,11 @@ function CategoryBuyControls({
   async function enqueue() {
     setState("loading"); setMsg("");
 
-    // 🚀 PRE-ARM: ask extension to start opening the ahlan.sa tab NOW —
-    // in parallel with the enqueue POST. Tab is loading while Vercel works.
-    if (typeof window !== "undefined" && (window as any).__ahlanExt?.openTabFor) {
-      try { (window as any).__ahlanExt.openTabFor(slug); } catch {/* */}
+    // Check if extension bridge is loaded — if not, warn user clearly
+    const ext = typeof window !== "undefined" ? (window as any).__ahlanExt : null;
+    const hasExt = !!(ext && typeof ext.openTabFor === "function");
+    if (hasExt) {
+      try { ext.openTabFor(slug); } catch {/* */}
     }
 
     try {
@@ -611,11 +612,12 @@ function CategoryBuyControls({
       }
       setOrderId(d.id);
       setState("queued");
-      setMsg(`Order #${d.id} queued`);
-      // Tell the extension the order is ready — it will pick it up from the queue.
-      if (typeof window !== "undefined" && (window as any).__ahlanExt?.sendBuyEnqueued) {
-        try { (window as any).__ahlanExt.sendBuyEnqueued(d.id, slug); }
-        catch (e) {/* extension not installed */}
+      if (hasExt) {
+        setMsg(`Order #${d.id} queued · extension v${ext.version || "?"} fired · tab should open now`);
+        try { ext.sendBuyEnqueued(d.id, slug); } catch {/* */}
+      } else {
+        setMsg(`Order #${d.id} queued, BUT extension not detected — open ahlan.sa manually or install/reload the extension`);
+        setState("error");
       }
     } catch (e: any) {
       setState("error");
@@ -624,6 +626,7 @@ function CategoryBuyControls({
   }
 
   return (
+    <div className="flex flex-col gap-1.5">
     <div className="flex items-center gap-2">
       <div className="flex items-center gap-1 bg-slate-800/50 rounded-md border border-white/5">
         <button
@@ -669,6 +672,15 @@ function CategoryBuyControls({
         <ExternalLink className="w-3 h-3" />
         <span className="hidden sm:inline">Manual</span>
       </a>
+    </div>
+    {msg && state !== "idle" && state !== "loading" && (
+      <div className={clsx(
+        "text-[10px] px-2 py-1.5 rounded whitespace-normal leading-snug",
+        state === "error"
+          ? "bg-red-500/15 text-red-300 border border-red-500/30"
+          : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+      )}>{msg}</div>
+    )}
     </div>
   );
 }
