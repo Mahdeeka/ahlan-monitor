@@ -6,40 +6,58 @@
  * v1.0 — simpler, no IPC race, recovers from sign-in interstitial.
  */
 
-(function () {
+// ────────────────────────────────────────────────────────────────────────
+// CRITICAL: this script must run at document_start (per manifest) so we
+// can capture the URL hash BEFORE ahlan.sa's Next.js SPA hydrates and
+// calls history.replaceState — which strips the hash and erases the order.
+// ────────────────────────────────────────────────────────────────────────
+console.log("[ahlan-ext] content.js loaded at", location.href, "readyState:", document.readyState);
+
+(function bootstrap() {
   if (window.__ahlan_ext_loaded) return;
   window.__ahlan_ext_loaded = true;
 
-  // ── Pull order from URL hash ─────────────────────────────────────────
+  // Step 1: read hash IMMEDIATELY before SPA can strip it
   const hashKey = "__ahlan_buy=";
+  let order = null;
   const idx = location.hash.indexOf(hashKey);
-  if (idx < 0) {
-    // Maybe we got here via a sign-in redirect that stripped the hash.
-    // Try sessionStorage where we stashed it just before any /Signin bounce.
-    const cached = sessionStorage.getItem("__ahlan_pending_order");
-    if (!cached) return; // not our tab
+  if (idx >= 0) {
     try {
-      const order = JSON.parse(cached);
-      console.log("[ahlan-ext] resumed order from sessionStorage after redirect", order);
-      sessionStorage.removeItem("__ahlan_pending_order");
-      runFlow(order);
-    } catch { /* */ }
-    return;
+      const b64 = location.hash.slice(idx + hashKey.length).split("&")[0];
+      order = JSON.parse(decodeURIComponent(escape(atob(b64))));
+      console.log("[ahlan-ext] captured order from hash:", order);
+      // Stash to sessionStorage so we survive any /Signin redirect
+      try { sessionStorage.setItem("__ahlan_pending_order", JSON.stringify(order)); } catch {}
+    } catch (e) {
+      console.warn("[ahlan-ext] hash payload parse failed:", e, location.hash.slice(0, 100));
+    }
+  } else {
+    // No hash — maybe a sessionStorage-stashed order from before a redirect
+    try {
+      const cached = sessionStorage.getItem("__ahlan_pending_order");
+      if (cached) {
+        order = JSON.parse(cached);
+        console.log("[ahlan-ext] resumed order from sessionStorage:", order);
+      }
+    } catch {}
   }
-  let order;
-  try {
-    const b64 = location.hash.slice(idx + hashKey.length).split("&")[0];
-    order = JSON.parse(decodeURIComponent(escape(atob(b64))));
-  } catch (e) {
-    console.warn("[ahlan-ext] bad hash payload", e);
-    return;
-  }
-  // Stash so we can recover after any /Signin bounce that strips the hash
-  try { sessionStorage.setItem("__ahlan_pending_order", JSON.stringify(order)); } catch {}
-  // Clean the hash so reloads don't re-fire
-  try { history.replaceState(null, "", location.pathname + location.search); } catch {}
 
-  runFlow(order);
+  if (!order) {
+    console.log("[ahlan-ext] no order for this tab — user is just browsing.");
+    return;
+  }
+
+  // Step 2: wait for DOM to be ready before running the buy flow (we need
+  // to insert the HUD into document.documentElement / append to body, and
+  // probe React-rendered buttons like "Find Tickets").
+  function startWhenReady() {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => runFlow(order), { once: true });
+    } else {
+      runFlow(order);
+    }
+  }
+  startWhenReady();
 })();
 
 // ────────────────────────────────────────────────────────────────────────
@@ -51,14 +69,15 @@ function ensureHud() {
   el = document.createElement("div");
   el.id = "__ahlan_hud";
   el.style.cssText = `
-    position:fixed; top:12px; right:12px; z-index:2147483647;
+    position:fixed !important; top:12px !important; right:12px !important; z-index:2147483647 !important;
     width:340px; max-width:calc(100vw - 24px);
-    background:rgba(15,23,42,0.97); color:#e2e8f0;
+    background:rgba(15,23,42,0.97) !important; color:#e2e8f0 !important;
     border:1px solid rgba(99,102,241,0.5);
     border-radius:12px; padding:12px 14px;
     font:13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
     box-shadow:0 8px 24px rgba(0,0,0,0.35);
     backdrop-filter:blur(8px);
+    pointer-events:auto;
   `;
   el.innerHTML = `
     <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
@@ -70,8 +89,10 @@ function ensureHud() {
     <div id="__ahlan_hud_steps" style="margin-top:8px;font-size:11px;line-height:1.6;color:#94a3b8;"></div>
     <div id="__ahlan_hud_action" style="margin-top:10px;"></div>
   `;
-  document.documentElement.appendChild(el);
-  document.getElementById("__ahlan_close").onclick = () => el.remove();
+  const parent = document.body || document.documentElement;
+  if (parent) parent.appendChild(el);
+  const closeBtn = document.getElementById("__ahlan_close");
+  if (closeBtn) closeBtn.onclick = () => el.remove();
   return el;
 }
 const steps = [];

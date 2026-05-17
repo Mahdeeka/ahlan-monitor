@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Ahlan Auto-Buy",
   "short_name": "Ahlan",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Watches the AFC ticket dashboard and auto-opens ahlan.sa to the cart for any queued buy orders, stopping at payment for human confirmation.",
   "permissions": [
     "alarms",
@@ -35,7 +35,7 @@
     {
       "matches": ["https://www.ahlan.sa/*"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     },
     {
       "matches": ["https://ahlanweb.vercel.app/*"],
