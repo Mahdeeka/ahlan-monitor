@@ -562,6 +562,13 @@ function CategoryBuyControls({
 
   async function enqueue() {
     setState("loading"); setMsg("");
+
+    // 🚀 PRE-ARM: ask extension to start opening the ahlan.sa tab NOW —
+    // in parallel with the enqueue POST. Tab is loading while Vercel works.
+    if (typeof window !== "undefined" && (window as any).__ahlanExt?.openTabFor) {
+      try { (window as any).__ahlanExt.openTabFor(slug); } catch {/* */}
+    }
+
     try {
       const r = await fetch("/api/buy/enqueue", {
         method: "POST",
@@ -577,11 +584,10 @@ function CategoryBuyControls({
       setOrderId(d.id);
       setState("queued");
       setMsg(`Order #${d.id} queued`);
-      // 🚀 Direct push to the Chrome/Edge extension if installed —
-      // bypasses the 30s polling fallback, fires in ~50ms.
+      // Tell the extension the order is ready — it will pick it up from the queue.
       if (typeof window !== "undefined" && (window as any).__ahlanExt?.sendBuyEnqueued) {
-        try { (window as any).__ahlanExt.sendBuyEnqueued(d.id); }
-        catch (e) { /* extension not installed or context invalidated */ }
+        try { (window as any).__ahlanExt.sendBuyEnqueued(d.id, slug); }
+        catch (e) {/* extension not installed */}
       }
     } catch (e: any) {
       setState("error");

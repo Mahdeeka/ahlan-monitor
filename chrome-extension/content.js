@@ -22,6 +22,7 @@
   if (window.__ahlan_ext_loaded) return;
   window.__ahlan_ext_loaded = true;
 
+  const tContentStart = Date.now();
   let order = null;
   try {
     const r = await chrome.runtime.sendMessage({ type: "content_ready" });
@@ -30,6 +31,14 @@
   if (!order) return; // user is just browsing — don't interfere
 
   console.log("[Ahlan Ext] order received:", order);
+  const sendTiming = (extra) => {
+    try {
+      chrome.runtime.sendMessage({
+        type: "content_timing",
+        timing: { tContentStart, ...extra },
+      });
+    } catch (e) {/* */}
+  };
 
   // ── helpers ──────────────────────────────────────────────────────────
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -97,7 +106,7 @@
    .catch(e => ({ _error: e.message }));
 
   // ── 1. Click Find Tickets the moment it appears ─────────────────────
-  let findBtn = await waitFor(findFindTicketsBtn, { timeout: 8000, interval: 80 });
+  let findBtn = await waitFor(findFindTicketsBtn, { timeout: 8000, interval: 50 });
   if (!findBtn) {
     report("failed", {
       error_msg: "Find Tickets button not found on page",
@@ -105,10 +114,14 @@
     });
     return;
   }
+  const tFindClick = Date.now();
   findBtn.click();
+  sendTiming({ tFindClick });
 
-  // ── 2. Wait for queue-token (poll every 50ms — usually appears in <300ms) ──
-  const queueToken = await waitFor(readQueueToken, { timeout: 8000, interval: 50 });
+  // ── 2. Wait for queue-token (poll every 40ms — usually appears in <300ms) ──
+  const queueToken = await waitFor(readQueueToken, { timeout: 8000, interval: 40 });
+  const tQueueToken = Date.now();
+  sendTiming({ tQueueToken });
   if (!queueToken) {
     report("failed", {
       error_msg: "queue-token never appeared",
@@ -116,10 +129,13 @@
     });
     return;
   }
-  console.log("[Ahlan Ext] queue-token:", queueToken.slice(0, 16) + "…");
+  console.log("[Ahlan Ext] queue-token:", queueToken.slice(0, 16) + "…",
+              `(took ${tQueueToken - tFindClick}ms)`);
 
   // ── 3. Await the parallel eventDetail (likely already resolved) ─────
   const eventDetail = await eventDetailPromise;
+  const tEventDetail = Date.now();
+  sendTiming({ tEventDetail });
   if (eventDetail._error) {
     report("failed", { error_msg: `eventDetail fetch failed: ${eventDetail._error}` });
     return;
@@ -177,6 +193,7 @@
   };
 
   let coResp;
+  const tCheckoutStart = Date.now();
   try {
     const r = await fetch("/api/ticketing/nonSeatedCheckout", {
       method: "POST",
@@ -200,6 +217,9 @@
     report("failed", { error_msg: `checkout fetch failed: ${e.message}` });
     return;
   }
+  const tCheckoutDone = Date.now();
+  sendTiming({ tCheckoutStart, tCheckoutDone });
+  console.log("[Ahlan Ext] checkout took", tCheckoutDone - tCheckoutStart, "ms");
 
   // ── 5. Extract payment URL + redirect ────────────────────────────────
   const data = coResp.data || coResp;
@@ -220,12 +240,14 @@
     return;
   }
 
-  console.log("[Ahlan Ext] payment URL:", paymentUrl);
+  const tPayUrl = Date.now();
+  sendTiming({ tPayUrl });
+  console.log("[Ahlan Ext] payment URL:", paymentUrl,
+              `(total: ${tPayUrl - tContentStart}ms in content.js)`);
   report("success", {
-    notes: `Cart created · ${catName} × ${qty}${orderId ? ` · order ${String(orderId).slice(-8)}` : ""} · redirecting to payment`,
+    notes: `Cart created · ${catName} × ${qty}${orderId ? ` · order ${String(orderId).slice(-8)}` : ""} · ${tPayUrl - tContentStart}ms in-tab`,
   });
   document.title = `🟢 PAY NOW · ${catName} ×${qty}`;
-  // Give the success notification a moment to fire, then redirect
-  await sleep(400);
+  // Redirect immediately — no artificial sleep
   window.location.href = paymentUrl;
 })();

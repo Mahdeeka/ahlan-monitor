@@ -80,37 +80,82 @@ async function logActivity(entry) {
 }
 
 /* ─── core: handle one order ──────────────────────────────────────────── */
-const inFlight = new Set(); // tab ids actively working an order
+const inFlight = new Set();           // order ids actively being processed
+const prearmedTabs = new Map();       // slug → { tabId, ts } — tabs opened before the order even exists
+const timings = new Map();            // orderId → { tStart, tPrearm, tClaim, tTab, tToken, tCheckout, tPay }
 
-async function handleOrder(order) {
+async function prearmTab(slug, ts) {
+  // If we already have a fresh prearmed tab for this slug, reuse it
+  const existing = prearmedTabs.get(slug);
+  if (existing && Date.now() - existing.ts < 60_000) {
+    try {
+      const t = await chrome.tabs.get(existing.tabId);
+      if (t && !t.discarded) return existing.tabId;
+    } catch {/* tab closed */}
+    prearmedTabs.delete(slug);
+  }
+  const url = `https://www.ahlan.sa/events/details?event=${encodeURIComponent(slug)}`;
+  try {
+    const tab = await chrome.tabs.create({ url, active: false });
+    prearmedTabs.set(slug, { tabId: tab.id, ts: Date.now() });
+    await logActivity({ slug, status: "prearm", msg: `pre-opened tab ${tab.id} for ${slug}` });
+    return tab.id;
+  } catch (e) {
+    await logActivity({ slug, status: "prearm_err", msg: e.message });
+    return null;
+  }
+}
+
+async function handleOrder(order, pushedAt) {
   if (inFlight.has(order.id)) return;
   inFlight.add(order.id);
+  const t0 = pushedAt || Date.now();
+  timings.set(order.id, { tStart: t0 });
 
-  await logActivity({ id: order.id, slug: order.slug, status: "claiming", msg: `claiming order #${order.id}` });
+  await logActivity({ id: order.id, slug: order.slug, status: "claiming",
+                       msg: `claiming order #${order.id}` });
   const settings = await getSettings();
   const claimed = await claimOrder(order.id, settings.workerId);
+  const tClaim = Date.now();
+  timings.set(order.id, { ...timings.get(order.id), tClaim });
   if (!claimed) {
     await logActivity({ id: order.id, status: "skipped", msg: "already claimed by another worker" });
     inFlight.delete(order.id);
     return;
   }
 
-  const url = `https://www.ahlan.sa/events/details?event=${encodeURIComponent(order.slug)}`;
+  // Reuse pre-armed tab if one exists for this slug
   let tab;
-  try {
-    tab = await chrome.tabs.create({ url, active: true });
-  } catch (e) {
-    await completeOrder(order.id, { status: "failed", error_msg: `tab open: ${e.message}` });
-    await logActivity({ id: order.id, status: "failed", msg: `tab open failed: ${e.message}` });
-    inFlight.delete(order.id);
-    return;
+  const arm = prearmedTabs.get(order.slug);
+  if (arm) {
+    try {
+      tab = await chrome.tabs.get(arm.tabId);
+      prearmedTabs.delete(order.slug);
+      // Focus it
+      try { await chrome.tabs.update(arm.tabId, { active: true }); } catch {}
+    } catch { tab = null; }
   }
+  if (!tab) {
+    const url = `https://www.ahlan.sa/events/details?event=${encodeURIComponent(order.slug)}`;
+    try {
+      tab = await chrome.tabs.create({ url, active: true });
+    } catch (e) {
+      await completeOrder(order.id, { status: "failed", error_msg: `tab open: ${e.message}` });
+      await logActivity({ id: order.id, status: "failed", msg: `tab open failed: ${e.message}` });
+      inFlight.delete(order.id);
+      return;
+    }
+  }
+  const tTab = Date.now();
+  timings.set(order.id, { ...timings.get(order.id), tTab });
 
-  notify(`Order #${order.id} opening`, `${order.title || order.slug} · ${order.category} × ${order.qty}`);
-  await logActivity({ id: order.id, slug: order.slug, status: "claimed", msg: `tab ${tab.id} opened` });
+  notify(`Order #${order.id} firing`,
+         `${order.title || order.slug} · ${order.category} × ${order.qty} (${tTab - t0}ms to tab)`);
+  await logActivity({ id: order.id, slug: order.slug, status: "tab_open",
+                       msg: `tab ${tab.id} ready in ${tTab - t0}ms` });
 
-  // Stash order context on the tab — content.js will message us back when ready
-  await chrome.storage.session.set({ [`order_${tab.id}`]: order });
+  // Stash order context — content.js asks for it on load
+  await chrome.storage.session.set({ [`order_${tab.id}`]: { ...order, _tStart: t0 } });
 }
 
 /* ─── content.js → background message bridge ──────────────────────────── */
@@ -141,10 +186,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return;
     }
+    if (msg?.type === "prearm_tab") {
+      await prearmTab(msg.slug, msg.ts);
+      sendResponse({ ok: true });
+      return;
+    }
     if (msg?.type === "order_enqueued") {
-      // Direct push from dashboard — fire immediately, no wait for next alarm tick
-      await logActivity({ id: msg.orderId, status: "pushed", msg: "direct push from dashboard" });
-      await runPoll();
+      // Direct push from dashboard — fire immediately, no alarm wait
+      await logActivity({ id: msg.orderId, status: "pushed",
+                          msg: `direct push (slug=${msg.slug || "?"})` });
+      // If we have a fresh queue order from /api/buy/queue, handleOrder it.
+      // Otherwise just kick off a poll which finds + handles it.
+      await runPoll(msg.ts);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg?.type === "content_timing") {
+      // content.js telling us per-step durations
+      const tabId = sender.tab?.id;
+      const { [`order_${tabId}`]: order } = await chrome.storage.session.get([`order_${tabId}`]);
+      if (order) {
+        const prior = timings.get(order.id) || {};
+        timings.set(order.id, { ...prior, ...msg.timing });
+        await chrome.storage.local.set({ lastTiming: { id: order.id, slug: order.slug, ...prior, ...msg.timing } });
+      }
       sendResponse({ ok: true });
       return;
     }
@@ -159,7 +224,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 /* ─── periodic poll ───────────────────────────────────────────────────── */
-async function runPoll() {
+async function runPoll(pushedAt) {
   const s = await getSettings();
   if (!s.enabled) return;
   if (!s.workerToken) {
@@ -170,7 +235,7 @@ async function runPoll() {
     const orders = await fetchQueue();
     await chrome.storage.local.set({ lastPollOk: Date.now(), lastError: null });
     for (const o of orders) {
-      await handleOrder(o);
+      await handleOrder(o, pushedAt);
     }
   } catch (e) {
     await chrome.storage.local.set({ lastError: String(e).slice(0, 200) });

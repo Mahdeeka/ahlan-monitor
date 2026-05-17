@@ -7,9 +7,11 @@ window.addEventListener("message", (e) => {
   if (e.source !== window) return;
   const d = e.data;
   if (!d || d.source !== "ahlan-dashboard") return;
-  if (d.type === "order_enqueued") {
-    try {
-      chrome.runtime.sendMessage({ type: "order_enqueued", orderId: d.orderId });
-    } catch (err) { /* extension context invalidated */ }
-  }
+  try {
+    if (d.type === "prearm_tab") {
+      chrome.runtime.sendMessage({ type: "prearm_tab", slug: d.slug, ts: d.ts });
+    } else if (d.type === "order_enqueued") {
+      chrome.runtime.sendMessage({ type: "order_enqueued", orderId: d.orderId, slug: d.slug, ts: d.ts });
+    }
+  } catch (err) { /* extension context invalidated */ }
 });

@@ -1,6 +1,6 @@
 async function refresh() {
   const s = await chrome.storage.local.get([
-    "enabled", "dashboardUrl", "workerToken", "lastPollOk", "lastError", "activity",
+    "enabled", "dashboardUrl", "workerToken", "lastPollOk", "lastError", "activity", "lastTiming",
   ]);
   const enabled = s.enabled !== false;
   document.getElementById("enabled").checked = enabled;
@@ -19,6 +19,33 @@ async function refresh() {
   } else {
     status.className = "status warn";
     status.textContent = enabled ? "Waiting for first poll…" : "Polling disabled";
+  }
+
+  // Timing breakdown of the most recent order
+  const tDiv = document.getElementById("timing");
+  if (s.lastTiming && s.lastTiming.tStart) {
+    const t = s.lastTiming;
+    const seg = (label, from, to) => {
+      const f = t[from], tt = t[to];
+      if (!f || !tt) return "";
+      return `<div class="row"><span>${label}</span><span class="time">${tt - f}ms</span></div>`;
+    };
+    tDiv.innerHTML = `
+      <div style="font-size:10px; color:#94a3b8; margin: 8px 0 4px;">
+        ⏱ Last order #${t.id || "?"} timing
+      </div>
+      ${seg("push → tab open",       "tStart",        "tTab")}
+      ${seg("├ claim API",           "tStart",        "tClaim")}
+      ${seg("├ tab create",          "tClaim",        "tTab")}
+      ${seg("tab open → content fire","tTab",          "tContentStart")}
+      ${seg("Find Tickets click",    "tContentStart", "tFindClick")}
+      ${seg("queue-token wait",      "tFindClick",    "tQueueToken")}
+      ${seg("eventDetail fetch",     "tContentStart", "tEventDetail")}
+      ${seg("nonSeatedCheckout API", "tCheckoutStart","tCheckoutDone")}
+      ${seg("──── total ────",       "tStart",        "tPayUrl")}
+    `;
+  } else {
+    tDiv.innerHTML = "";
   }
 
   const list = s.activity || [];
