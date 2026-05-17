@@ -53,10 +53,35 @@ export default function SetupPage() {
           </ul>
         </section>
 
+        <section className="glass rounded-2xl p-5 space-y-3 border border-pink-500/30">
+          <h2 className="text-base font-bold flex items-center gap-2 text-pink-300">
+            🌐 Alternative: use the Chrome extension (recommended)
+          </h2>
+          <p className="text-slate-300 text-xs leading-relaxed">
+            Skip the Python bot entirely. The Chrome extension polls the queue,
+            opens ahlan.sa in your already-logged-in browser, auto-fills the
+            cart, and stops at payment for you to confirm. Faster, no install
+            beyond Chrome.
+          </p>
+          <ol className="text-xs space-y-1 text-slate-400 list-decimal list-inside">
+            <li>Open Chrome → <code className="bg-slate-800/60 px-1 rounded">chrome://extensions</code></li>
+            <li>Toggle <strong>Developer mode</strong> (top-right)</li>
+            <li>Click <strong>Load unpacked</strong> → select{" "}
+              <code className="bg-slate-800/60 px-1 rounded">C:\Users\mahdi\OneDrive\Documents\ahlan_web\chrome-extension</code></li>
+            <li>Click the 🛒 icon → Settings → paste your worker token → Save</li>
+            <li>Make sure you're logged into ahlan.sa once in this browser</li>
+            <li>Click <strong>Buy</strong> in the dashboard. The extension takes care of the rest.</li>
+          </ol>
+          <div className="text-[11px] text-slate-500 mt-2">
+            Cart will park at the payment page; you confirm Visa manually. Chrome
+            notification fires when ready.
+          </div>
+        </section>
+
         <section className="glass rounded-2xl p-5 space-y-3 border border-emerald-500/20">
           <h2 className="text-base font-bold flex items-center gap-2 text-emerald-300">
             <PlayCircle className="w-4 h-4" />
-            How to start the worker
+            Alternative: how to start the local Python worker
           </h2>
           <div className="text-slate-300 space-y-2">
             <div>

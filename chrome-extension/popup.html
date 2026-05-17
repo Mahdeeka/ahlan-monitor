@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html><head>
+  <meta charset="utf-8">
+  <title>Ahlan Auto-Buy</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+           background: #0a0c1a; color: #e2e8f0;
+           margin: 0; padding: 12px; width: 320px; font-size: 12px; }
+    h1 { font-size: 14px; margin: 0 0 8px; color: #a5b4fc; }
+    .status { padding: 8px 10px; border-radius: 8px; margin-bottom: 10px; font-size: 11px;
+              border: 1px solid; }
+    .status.ok    { background: #064e3b40; color: #6ee7b7; border-color: #10b98140; }
+    .status.warn  { background: #78350f40; color: #fbbf24; border-color: #d97706; }
+    .status.err   { background: #7f1d1d40; color: #fca5a5; border-color: #dc2626; }
+    .row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #1e293b; font-size: 11px; }
+    .row .time { color: #64748b; }
+    .actions { display: flex; gap: 6px; margin-top: 10px; }
+    .btn { flex: 1; padding: 7px 10px; border: 1px solid #334155; background: #1e293b;
+           color: #cbd5e1; border-radius: 6px; cursor: pointer; font-size: 11px; }
+    .btn:hover { background: #334155; color: #fff; }
+    .btn.primary { background: #312e81; border-color: #4338ca; color: #c7d2fe; }
+    .btn.primary:hover { background: #4338ca; color: #fff; }
+    a { color: #818cf8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .toggle { display: flex; align-items: center; gap: 6px; }
+    .toggle input { width: 14px; height: 14px; }
+    #activity { max-height: 220px; overflow-y: auto; }
+  </style>
+</head><body>
+  <h1>🛒 Ahlan Auto-Buy</h1>
+  <div id="status" class="status warn">Loading…</div>
+
+  <div class="toggle" style="margin-bottom: 8px;">
+    <input type="checkbox" id="enabled">
+    <label for="enabled">Enabled (poll queue every minute)</label>
+  </div>
+
+  <div class="actions">
+    <button class="btn primary" id="pollNow">Poll now</button>
+    <button class="btn" id="openDashboard">Dashboard</button>
+    <button class="btn" id="openOptions">Settings</button>
+  </div>
+
+  <h1 style="margin-top: 14px;">Recent activity</h1>
+  <div id="activity"></div>
+
+  <script src="popup.js"></script>
+</body></html>

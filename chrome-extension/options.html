@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html><head>
+  <meta charset="utf-8">
+  <title>Ahlan Auto-Buy — Settings</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+           background: #0a0c1a; color: #e2e8f0;
+           margin: 0; padding: 20px; width: 460px; font-size: 13px; }
+    h1 { font-size: 16px; margin: 0 0 12px; color: #a5b4fc; }
+    label { display: block; margin-top: 12px; color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    input { width: 100%; box-sizing: border-box; padding: 8px 10px; background: #1e293b;
+            border: 1px solid #334155; color: #f1f5f9; border-radius: 6px; font-size: 13px;
+            margin-top: 4px; }
+    input:focus { outline: none; border-color: #6366f1; }
+    .row { display: flex; align-items: center; gap: 6px; margin-top: 12px; }
+    button { padding: 9px 16px; background: #4338ca; color: #fff; border: 0;
+             border-radius: 6px; cursor: pointer; font-size: 13px; margin-top: 16px; }
+    button:hover { background: #6366f1; }
+    .ok { color: #6ee7b7; margin-top: 10px; font-size: 11px; }
+    .hint { color: #64748b; font-size: 11px; margin-top: 4px; line-height: 1.5; }
+  </style>
+</head><body>
+  <h1>Ahlan Auto-Buy — Settings</h1>
+
+  <label>Dashboard URL</label>
+  <input id="dashboardUrl" placeholder="https://ahlanweb.vercel.app">
+
+  <label>Worker token (BUY_WORKER_TOKEN)</label>
+  <input id="workerToken" type="password" placeholder="paste your token here">
+  <div class="hint">
+    This is the same token stored as <code>BUY_WORKER_TOKEN</code> on Vercel.
+    Without it the extension can't poll the queue.
+  </div>
+
+  <label>Worker ID (label shown in dashboard)</label>
+  <input id="workerId" placeholder="chrome-ext">
+
+  <div class="row">
+    <input type="checkbox" id="enabled" style="width:16px;">
+    <span>Enabled — automatically claim and open queued orders</span>
+  </div>
+
+  <button id="save">Save</button>
+  <span id="msg" class="ok"></span>
+</body>
+<script src="options.js"></script>
+</html>
