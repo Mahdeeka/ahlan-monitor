@@ -47,9 +47,25 @@ console.log("[ahlan-ext] content.js loaded at", location.href, "readyState:", do
     return;
   }
 
-  // Step 2: wait for DOM to be ready before running the buy flow (we need
-  // to insert the HUD into document.documentElement / append to body, and
-  // probe React-rendered buttons like "Find Tickets").
+  // Step 2: figure out where we are. ahlan can drop us in lots of places
+  // after a sign-in (homepage, /user-profile, etc.) so we may need to
+  // navigate ourselves to the right event page.
+  const path = location.pathname.toLowerCase();
+  const onSigninPage = /\/(signin|login)/i.test(path);
+  const onEventDetailPage = /\/events\/details/i.test(path);
+  const isHomeOrOther = !onSigninPage && !onEventDetailPage;
+
+  if (isHomeOrOther && order.slug) {
+    // We're somewhere weird (probably right after a successful login that
+    // redirected to home or profile). Navigate to the event page so the
+    // buy flow can continue.
+    console.log("[ahlan-ext] not on event page — navigating to event for order", order.id);
+    const targetUrl = `https://www.ahlan.sa/events/details?event=${encodeURIComponent(order.slug)}`;
+    location.replace(targetUrl);
+    return;
+  }
+
+  // Step 3: wait for DOM ready, then drive the flow
   function startWhenReady() {
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", () => runFlow(order), { once: true });
@@ -205,17 +221,31 @@ async function runFlow(order) {
 
   // ── Sign-in interstitial ─────────────────────────────────────────────
   if (onSignIn()) {
-    hudStatus("You're signed out. Sign in below and we'll continue automatically.", "warn");
-    hudStep("Detected /Signin redirect", "err");
-    hudAction(`<div style="color:#fde047;font-size:11px;">After login, this tab will auto-resume order #${order.id}.</div>`);
-    report("auth_error", { error_msg: "Not logged in to ahlan.sa", notes: "User is sitting on /Signin" });
-    // Watch for navigation away from /Signin → re-fire the flow
+    hudStatus(`⚠️  Sign in below to buy ${order.title || order.slug}`, "warn");
+    hudStep(`Order #${order.id}: ${order.category} × ${order.qty}`, "wait");
+    hudStep("Waiting for you to log in", "busy");
+    hudAction(`
+      <div style="background:rgba(252,211,77,0.12);border:1px solid rgba(252,211,77,0.4);border-radius:6px;padding:8px 10px;color:#fde047;font-size:11px;line-height:1.5;">
+        <strong>👇 Sign in to ahlan.sa below.</strong><br>
+        As soon as you're logged in, this tab will jump back to the match page and finish your order automatically.<br>
+        <em style="color:#94a3b8;">Don't close this tab.</em>
+      </div>
+    `);
+    report("auth_error", { error_msg: "Not logged in to ahlan.sa", notes: "User on /Signin — HUD shown, watching for login" });
+
+    // Watch for URL change away from /signin (covers SPA nav + hard nav)
+    let lastUrl = location.href;
     const iv = setInterval(() => {
-      if (!onSignIn()) {
-        clearInterval(iv);
-        location.reload(); // we stashed the order in sessionStorage, content.js will pick it up
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        if (!onSignIn()) {
+          clearInterval(iv);
+          console.log("[ahlan-ext] sign-in finished, jumping back to event page for order", order.id);
+          // Force navigation to the event page — don't rely on ahlan's url_redirect
+          location.replace(`https://www.ahlan.sa/events/details?event=${encodeURIComponent(order.slug)}`);
+        }
       }
-    }, 1000);
+    }, 500);
     return;
   }
 
@@ -240,11 +270,25 @@ async function runFlow(order) {
 
   if (queueToken === "__AUTH__") {
     hudUpdateLast("err");
-    hudStatus("Bounced to sign-in. Log in, then this tab will resume the order.", "warn");
+    hudStatus(`⚠️  Sign in below to buy ${order.title || order.slug}`, "warn");
+    hudAction(`
+      <div style="background:rgba(252,211,77,0.12);border:1px solid rgba(252,211,77,0.4);border-radius:6px;padding:8px 10px;color:#fde047;font-size:11px;line-height:1.5;">
+        <strong>👇 Sign in to ahlan.sa below.</strong><br>
+        We clicked Find Tickets but you're not signed in. Log in and we'll auto-resume your order.<br>
+        <em style="color:#94a3b8;">Don't close this tab.</em>
+      </div>
+    `);
     report("auth_error", { error_msg: "Find Tickets click bounced to /Signin" });
+    let lastUrl = location.href;
     const iv = setInterval(() => {
-      if (!onSignIn()) { clearInterval(iv); location.reload(); }
-    }, 1000);
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        if (!onSignIn()) {
+          clearInterval(iv);
+          location.replace(`https://www.ahlan.sa/events/details?event=${encodeURIComponent(order.slug)}`);
+        }
+      }
+    }, 500);
     return;
   }
   if (!queueToken) {
