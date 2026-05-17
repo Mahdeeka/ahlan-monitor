@@ -330,69 +330,6 @@ export function DetailModal({
               c.is_hospitality === true ||
               (c.is_hospitality === undefined && c.name.toUpperCase().startsWith("MATCH"))
             );
-            const CategoryRow = ({ c }: { c: typeof event.categories[number] }) => {
-              const pctSold = c.quantity ? ((c.quantity - c.remaining) / c.quantity) * 100 : 0;
-              const pred = insights?.category_predictions?.find(p => p.name === c.name);
-              const canBuy = !c.sold_out && c.remaining > 0;
-              return (
-                <div key={c.name} className="glass rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-1">
-                    <div>
-                      <div className="text-sm font-medium">{c.name}</div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
-                        Max per order: {c.max_per_order}
-                        {c.price > 0 && <> · SAR {c.price.toLocaleString()}</>}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className={clsx("text-sm font-semibold", c.sold_out ? "text-red-400" : "text-slate-100")}>
-                        {c.sold_out ? "SOLD OUT" : `${c.remaining.toLocaleString()} / ${c.quantity.toLocaleString()}`}
-                      </div>
-                      {!c.sold_out && c.quantity > 0 && (
-                        <div className="text-[11px] text-slate-500">{pctSold.toFixed(0)}% sold</div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="w-full h-1.5 bg-slate-700/40 rounded-full overflow-hidden">
-                    <div className={clsx("h-full transition-all",
-                      c.sold_out ? "bg-red-500"
-                      : pctSold >= 90 ? "bg-orange-500"
-                      : pctSold >= 70 ? "bg-yellow-500"
-                      : "bg-emerald-500")}
-                      style={{ width: `${pctSold}%` }} />
-                  </div>
-                  {/* Sellout predictor */}
-                  {pred && !c.sold_out && pred.predicted_sellout_str && (
-                    <div className="mt-2 flex items-center justify-between text-[10px]">
-                      <div className="flex items-center gap-1 text-indigo-300">
-                        <Zap className="w-2.5 h-2.5" />
-                        <span>
-                          Sells out in <span className="font-semibold">{pred.predicted_sellout_str}</span>
-                          {pred.velocity_per_day != null && pred.velocity_per_day > 0 && (
-                            <span className="text-slate-500"> · {Math.round(pred.velocity_per_day)}/day</span>
-                          )}
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                  {pred && pred.predicted_sellout_str === "no movement" && (
-                    <div className="mt-2 text-[10px] text-slate-500">No sales in last 24h</div>
-                  )}
-                  {/* Buy buttons */}
-                  {canBuy && (
-                    <div className="mt-2.5 pt-2 border-t border-white/5">
-                      <CategoryBuyControls
-                        slug={event.slug}
-                        title={event.title}
-                        category={c.name}
-                        maxQty={Math.max(1, Math.min(c.max_per_order || 4, c.remaining))}
-                        price={c.price}
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            };
             return (
               <>
                 <section>
@@ -401,7 +338,15 @@ export function DetailModal({
                     Public tickets
                   </h3>
                   <div className="space-y-2">
-                    {publicCats.map(c => <CategoryRow key={c.name} c={c} />)}
+                    {publicCats.map(c => (
+                      <CategoryRow
+                        key={c.name}
+                        c={c}
+                        eventSlug={event.slug}
+                        eventTitle={event.title}
+                        prediction={insights?.category_predictions?.find(p => p.name === c.name)}
+                      />
+                    ))}
                     {publicCats.length === 0 && (
                       <div className="glass rounded-lg p-3 text-xs text-slate-500 text-center">
                         No public categories on sale.
@@ -419,7 +364,15 @@ export function DetailModal({
                       </span>
                     </h3>
                     <div className="space-y-2 opacity-90">
-                      {hospCats.map(c => <CategoryRow key={c.name} c={c} />)}
+                      {hospCats.map(c => (
+                        <CategoryRow
+                          key={c.name}
+                          c={c}
+                          eventSlug={event.slug}
+                          eventTitle={event.title}
+                          prediction={insights?.category_predictions?.find(p => p.name === c.name)}
+                        />
+                      ))}
                     </div>
                   </section>
                 )}
@@ -546,6 +499,81 @@ function BuyScoreCard({ buy }: { buy: Insights["buy_score"] }) {
         </div>
       </div>
     </section>
+  );
+}
+
+/** Single category row — top-level so React preserves child state across re-renders.
+ *  (Used to be defined inside DetailModal's IIFE — that caused qty +/- to reset
+ *  to 1 on every parent render because React saw a new component type each time.) */
+type CatPred = {
+  name: string;
+  predicted_sellout_str: string | null;
+  velocity_per_day: number | null;
+};
+function CategoryRow({
+  c, eventSlug, eventTitle, prediction,
+}: {
+  c: { name: string; remaining: number; quantity: number; sold_out: boolean; price: number; max_per_order: number };
+  eventSlug: string; eventTitle: string;
+  prediction?: CatPred;
+}) {
+  const pctSold = c.quantity ? ((c.quantity - c.remaining) / c.quantity) * 100 : 0;
+  const canBuy = !c.sold_out && c.remaining > 0;
+  return (
+    <div className="glass rounded-lg p-3">
+      <div className="flex items-center justify-between mb-1">
+        <div>
+          <div className="text-sm font-medium">{c.name}</div>
+          <div className="text-[11px] text-slate-500 mt-0.5">
+            Max per order: {c.max_per_order}
+            {c.price > 0 && <> · SAR {c.price.toLocaleString()}</>}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className={clsx("text-sm font-semibold", c.sold_out ? "text-red-400" : "text-slate-100")}>
+            {c.sold_out ? "SOLD OUT" : `${c.remaining.toLocaleString()} / ${c.quantity.toLocaleString()}`}
+          </div>
+          {!c.sold_out && c.quantity > 0 && (
+            <div className="text-[11px] text-slate-500">{pctSold.toFixed(0)}% sold</div>
+          )}
+        </div>
+      </div>
+      <div className="w-full h-1.5 bg-slate-700/40 rounded-full overflow-hidden">
+        <div className={clsx("h-full transition-all",
+          c.sold_out ? "bg-red-500"
+          : pctSold >= 90 ? "bg-orange-500"
+          : pctSold >= 70 ? "bg-yellow-500"
+          : "bg-emerald-500")}
+          style={{ width: `${pctSold}%` }} />
+      </div>
+      {prediction && !c.sold_out && prediction.predicted_sellout_str && (
+        <div className="mt-2 flex items-center justify-between text-[10px]">
+          <div className="flex items-center gap-1 text-indigo-300">
+            <Zap className="w-2.5 h-2.5" />
+            <span>
+              Sells out in <span className="font-semibold">{prediction.predicted_sellout_str}</span>
+              {prediction.velocity_per_day != null && prediction.velocity_per_day > 0 && (
+                <span className="text-slate-500"> · {Math.round(prediction.velocity_per_day)}/day</span>
+              )}
+            </span>
+          </div>
+        </div>
+      )}
+      {prediction && prediction.predicted_sellout_str === "no movement" && (
+        <div className="mt-2 text-[10px] text-slate-500">No sales in last 24h</div>
+      )}
+      {canBuy && (
+        <div className="mt-2.5 pt-2 border-t border-white/5">
+          <CategoryBuyControls
+            slug={eventSlug}
+            title={eventTitle}
+            category={c.name}
+            maxQty={Math.max(1, Math.min(c.max_per_order || 4, c.remaining))}
+            price={c.price}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 

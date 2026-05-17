@@ -126,19 +126,22 @@ async function handleOrder(order, pushedAt) {
 
   // Reuse pre-armed tab if one exists for this slug
   let tab;
+  let wasPrearmed = false;
   const arm = prearmedTabs.get(order.slug);
   if (arm) {
     try {
       tab = await chrome.tabs.get(arm.tabId);
       prearmedTabs.delete(order.slug);
-      // Focus it
-      try { await chrome.tabs.update(arm.tabId, { active: true }); } catch {}
+      wasPrearmed = true;
+      // Don't activate yet — wait until cart is ready (content.js will request focus on success)
     } catch { tab = null; }
   }
   if (!tab) {
     const url = `https://www.ahlan.sa/events/details?event=${encodeURIComponent(order.slug)}`;
     try {
-      tab = await chrome.tabs.create({ url, active: true });
+      // Open in background so we don't steal focus mid-task.
+      // Content script flips to active=true when the cart is parked at payment.
+      tab = await chrome.tabs.create({ url, active: false });
     } catch (e) {
       await completeOrder(order.id, { status: "failed", error_msg: `tab open: ${e.message}` });
       await logActivity({ id: order.id, status: "failed", msg: `tab open failed: ${e.message}` });
@@ -198,6 +201,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // If we have a fresh queue order from /api/buy/queue, handleOrder it.
       // Otherwise just kick off a poll which finds + handles it.
       await runPoll(msg.ts);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg?.type === "focus_tab") {
+      // content.js is done — bring its tab to front so user can pay
+      const tabId = sender.tab?.id;
+      if (tabId != null) {
+        try {
+          await chrome.tabs.update(tabId, { active: true });
+          const tab = await chrome.tabs.get(tabId);
+          if (tab.windowId != null) {
+            try { await chrome.windows.update(tab.windowId, { focused: true }); } catch {}
+          }
+        } catch {}
+      }
       sendResponse({ ok: true });
       return;
     }

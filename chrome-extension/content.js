@@ -141,31 +141,45 @@
     return;
   }
 
-  // Pick the right ticket. Prefer the dashboard-requested category, fall back
-  // to Premium > CAT 1 > CAT 2.
+  // Pick the right ticket — STRICT match to what the user clicked. We do
+  // NOT silently fall back to a different category, because that's how
+  // people end up with Premium when they wanted CAT 2.
   const tickets = eventDetail.event_tickets || [];
-  const PRIORITY = ["Premium", "CAT 1", "CAT 2"];
   const wanted = (order.category || "").trim().toLowerCase();
   let pick = null;
+
   if (wanted) {
-    pick = tickets.find(t => (t.title || "").trim().toLowerCase() === wanted);
-    if (pick && (Number(pick.remaining) || 0) === 0) {
-      report("sold_out", {
-        error_msg: `${order.category} is sold out`,
-        notes: `Other categories may be available — re-queue without specifying category to use priority.`,
+    // Whitespace-tolerant exact match (case-insensitive)
+    const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+    pick = tickets.find(t => norm(t.title) === norm(wanted));
+    if (!pick) {
+      // List what we actually saw so the user can tell us if ahlan changed naming
+      const seen = tickets.map(t => `"${(t.title || "").trim()}"`).join(", ");
+      report("failed", {
+        error_msg: `Category "${order.category}" not found in event tickets`,
+        notes: `ahlan returned: ${seen || "(none)"}. NOT auto-picking a different one — re-queue with the exact category name.`,
       });
       return;
     }
-  }
-  if (!pick) {
+    if ((Number(pick.remaining) || 0) === 0) {
+      report("sold_out", {
+        error_msg: `${order.category} just sold out`,
+        notes: `Try a different category. (We deliberately don't auto-switch — that's how people get surprised by Premium charges.)`,
+      });
+      return;
+    }
+  } else {
+    // No category specified — only then do we apply priority
+    const PRIORITY = ["Premium", "CAT 1", "CAT 2"];
     for (const name of PRIORITY) {
       const c = tickets.find(t => (t.title || "").trim() === name);
       if (c && (Number(c.remaining) || 0) > 0) { pick = c; break; }
     }
-  }
-  if (!pick) {
-    report("sold_out", { error_msg: "No public categories available", notes: "All Premium/CAT 1/CAT 2 sold out." });
-    return;
+    if (!pick) {
+      report("sold_out", { error_msg: "No public categories available",
+                           notes: "All Premium/CAT 1/CAT 2 sold out (no category was specified)." });
+      return;
+    }
   }
 
   const ticketId = pick._id;
@@ -247,6 +261,8 @@
   report("success", {
     notes: `Cart created · ${catName} × ${qty}${orderId ? ` · order ${String(orderId).slice(-8)}` : ""} · ${tPayUrl - tContentStart}ms in-tab`,
   });
+  // Ask the background worker to bring this tab to the front — it's now ready for human.
+  try { chrome.runtime.sendMessage({ type: "focus_tab" }); } catch {/* */}
   document.title = `🟢 PAY NOW · ${catName} ×${qty}`;
   // Redirect immediately — no artificial sleep
   window.location.href = paymentUrl;
