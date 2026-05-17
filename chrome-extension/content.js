@@ -87,9 +87,17 @@ console.log("[ahlan-ext] content.js loaded at", location.href, "readyState:", do
 function setReactInputValue(input, value) {
   // React tracks input values internally; bypass that with the native setter
   const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-  nativeSetter.call(input, value);
+  input.focus();
+  // Clear existing value (pre-filled email/password from prior session)
+  nativeSetter.call(input, "");
   input.dispatchEvent(new Event("input", { bubbles: true }));
+  // Set new value
+  nativeSetter.call(input, value);
+  input.dispatchEvent(new Event("input",  { bubbles: true }));
   input.dispatchEvent(new Event("change", { bubbles: true }));
+  // Some libs (MUI, Mantine) validate on blur — fire it then re-focus
+  input.dispatchEvent(new Event("blur",   { bubbles: true }));
+  input.focus();
 }
 
 async function tryAutoLogin(order, hudStatus, hudStep, hudAction) {
@@ -141,40 +149,64 @@ async function tryAutoLogin(order, hudStatus, hudStep, hudAction) {
   // Try each available account in turn until one succeeds
   for (const acc of available) {
     hudStep(`Login as ${acc.email}`, "busy");
+    console.log(`[ahlan-ext] login attempt for ${acc.email}`);
+
     setReactInputValue(ins.emailIn, acc.email);
     setReactInputValue(ins.pwIn,    acc.password);
-    await new Promise(r => setTimeout(r, 250));
+    // Give React time to validate
+    await new Promise(r => setTimeout(r, 600));
 
-    const loginBtn = findLoginBtn();
-    if (!loginBtn) {
-      hudUpdateLast("err");
-      hudStatus("Found form but no Login button", "err");
-      return "btn_not_found";
+    // Poll for Login button to be enabled (it's often disabled until valid)
+    let loginBtn = null;
+    const tBtn0 = Date.now();
+    while (Date.now() - tBtn0 < 4000) {
+      const b = findLoginBtn();
+      if (b && !b.disabled && b.getAttribute("aria-disabled") !== "true") {
+        loginBtn = b; break;
+      }
+      await new Promise(r => setTimeout(r, 100));
     }
+    if (!loginBtn) {
+      console.warn(`[ahlan-ext] Login button never enabled — form validation failed?`);
+      hudUpdateLast("err");
+      await markAccountFailed(acc.email, "Login button stayed disabled");
+      continue;
+    }
+    console.log(`[ahlan-ext] Login button enabled, clicking`);
 
     try { sessionStorage.setItem("__ahlan_active_account", JSON.stringify({ email: acc.email })); } catch {}
-    loginBtn.click();
 
-    // Wait until either:
-    //  - URL changes off /Signin → success
-    //  - 6 s elapse → likely failed credentials (button click did nothing or
-    //    page reloaded back to /Signin)
+    // Three submission attempts in priority order:
+    //  1. Click the Login button (normal)
+    //  2. Press Enter in the password field (some forms only submit on Enter)
+    //  3. Programmatic form.requestSubmit() (last resort)
     const startUrl = location.href;
+    loginBtn.click();
+    // Belt-and-braces: also press Enter on the password field
+    setTimeout(() => {
+      try {
+        ins.pwIn.focus();
+        const evt = new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true });
+        ins.pwIn.dispatchEvent(evt);
+        const form = ins.pwIn.closest("form");
+        if (form && typeof form.requestSubmit === "function") form.requestSubmit();
+      } catch (e) {/* */}
+    }, 300);
+
+    // Wait up to 8s for URL to leave /Signin
     const outcome = await new Promise(resolve => {
       const t0 = Date.now();
       const iv = setInterval(() => {
         const stillSignin = /\/(signin|login)/i.test(location.pathname);
-        if (location.href !== startUrl && !stillSignin) {
-          clearInterval(iv); resolve("nav_off_signin");
-        } else if (Date.now() - t0 > 6000) {
-          clearInterval(iv); resolve("timeout");
-        } else if (!stillSignin) {
-          clearInterval(iv); resolve("nav_off_signin");
+        if (!stillSignin || location.href !== startUrl) {
+          if (!stillSignin) { clearInterval(iv); resolve("ok"); return; }
         }
+        if (Date.now() - t0 > 8000) { clearInterval(iv); resolve("timeout"); }
       }, 150);
     });
 
-    if (outcome === "nav_off_signin") {
+    if (outcome === "ok") {
+      console.log(`[ahlan-ext] ✓ logged in as ${acc.email}`);
       hudUpdateLast("ok");
       hudStatus(`✓ Logged in as ${acc.email} — loading match page…`, "ok");
       setTimeout(() => {
@@ -183,19 +215,23 @@ async function tryAutoLogin(order, hudStatus, hudStep, hudAction) {
       return "navigated";
     }
 
-    // Still on /Signin after click — wrong password / banned / captcha
-    hudUpdateLast("err");
-    await markAccountFailed(acc.email, "still on /Signin 6s after click");
-    // Clear the form for the next attempt
+    // Check for visible error message on the form
+    let errText = "still on /Signin 8s after click";
     try {
-      setReactInputValue(ins.emailIn, "");
-      setReactInputValue(ins.pwIn,    "");
+      const errEl = document.querySelector(".error, .ErrorMessage, [class*='error' i]:not(input):not(form)");
+      if (errEl && errEl.textContent && errEl.textContent.trim().length < 200) {
+        errText = errEl.textContent.trim();
+      }
     } catch {}
-    hudStatus(`${acc.email} login failed — trying next…`, "warn");
-    await new Promise(r => setTimeout(r, 500));
+    console.warn(`[ahlan-ext] ✗ login failed for ${acc.email}: ${errText}`);
+    hudUpdateLast("err");
+    await markAccountFailed(acc.email, errText);
+    hudStatus(`${acc.email} → ${errText.slice(0, 80)}`, "warn");
+    await new Promise(r => setTimeout(r, 800));
   }
 
-  hudStatus(`All ${available.length} stored accounts failed to log in.`, "err");
+  hudStatus(`All ${available.length} stored accounts failed to log in. Check passwords or reset usage.`, "err");
+  console.error(`[ahlan-ext] all ${available.length} accounts failed`);
   return "failed";
 }
 
