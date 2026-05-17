@@ -1,108 +1,65 @@
+/**
+ * GET /api/cron/poll
+ *
+ * Reliable heartbeat for the scraper. Vercel cron fires this every minute
+ * (per vercel.json). Each tick checks the clock and triggers the right
+ * GitHub Actions workflow:
+ *
+ *   - minute % 3 === 0  → dispatch Poll PRIORITY (3-min cadence)
+ *   - minute % 10 === 0 → dispatch Poll ALL       (10-min cadence)
+ *
+ * Why this instead of scraping directly from Vercel?
+ *   ahlan.sa's WAF blocks Vercel egress IPs even through Webshare proxies
+ *   (the proxy provider leaks the source IP via Via/X-Forwarded-For
+ *   headers or ahlan WAF fingerprints non-residential ASN paths).
+ *   GitHub Actions runners come from a different egress that works.
+ *
+ *   GH Actions' own scheduled cron is unreliable (we've observed 1-4 hour
+ *   gaps instead of the configured 3-min). Vercel cron IS reliable per
+ *   minute on the Pro plan, so we use Vercel as the heartbeat and GH
+ *   Actions as the worker.
+ *
+ * Requires: GH_DISPATCH_TOKEN env var = a personal access token with
+ *           "actions: write" scope on the Mahdeeka/ahlan-monitor repo.
+ */
 import { NextResponse } from "next/server";
-import { AFC_2027_SLUGS } from "@/lib/slugs";
-import { normalizeEvent } from "@/lib/normalize";
-import {
-  initSchema, getLatestEvents, recordSnapshot, recordChange,
-} from "@/lib/db";
-import type { Event } from "@/lib/types";
 
-// Node runtime (required for @vercel/postgres connection pooling)
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 30;
 
-const BASE = "https://www.ahlan.sa";
-const REAL_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-  "Accept": "application/json, text/plain, */*",
-  "Accept-Language": "en-US,en;q=0.9",
-  "Referer": `${BASE}/events`,
-  "Origin": BASE,
-  "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not.A/Brand";v="24"',
-  "sec-ch-ua-mobile": "?0",
-  "sec-ch-ua-platform": '"Windows"',
-};
+const REPO    = "Mahdeeka/ahlan-monitor";
+const REF     = "main";
+const WF_PRIO = "poll-priority.yml";
+const WF_ALL  = "poll.yml";
 
-async function fetchOne(slug: string, attempt = 1): Promise<any> {
-  try {
-    const r = await fetch(
-      `${BASE}/api/ticketing/eventDetail?slug=${slug}&language=en`,
-      { headers: REAL_HEADERS, cache: "no-store" }
-    );
-    if (r.status === 429 && attempt < 3) {
-      await new Promise(res => setTimeout(res, 800 * attempt));
-      return fetchOne(slug, attempt + 1);
-    }
-    if (!r.ok) return { _error: `HTTP ${r.status}` };
-    return await r.json();
-  } catch (e) {
-    return { _error: String(e) };
-  }
-}
-
-function detectChanges(prev: Event[], curr: Event[]) {
-  const prevBySlug = new Map(prev.map(e => [e.slug, e]));
-  const changes: Array<{ slug: string; title: string; type: string; details: any }> = [];
-  for (const ev of curr) {
-    if (ev.error) continue;
-    const p = prevBySlug.get(ev.slug);
-    if (!p) continue;
-    const delta = ev.total_remaining - p.total_remaining;
-    if (delta !== 0) {
-      changes.push({
-        slug: ev.slug, title: ev.title,
-        type: delta > 0 ? "tickets_added" : "tickets_sold",
-        details: { before: p.total_remaining, after: ev.total_remaining, delta },
-      });
-    }
-    if (p.urgency !== ev.urgency) {
-      changes.push({
-        slug: ev.slug, title: ev.title, type: "status_change",
-        details: { from: p.urgency, to: ev.urgency },
-      });
-    }
-    const prevCats = new Map(p.categories.map(c => [c.name, c]));
-    for (const c of ev.categories) {
-      const pc = prevCats.get(c.name);
-      if (!pc) continue;
-      if (pc.sold_out && !c.sold_out) {
-        changes.push({
-          slug: ev.slug, title: ev.title, type: "back_in_stock",
-          details: { category: c.name, remaining: c.remaining },
-        });
-      } else if (!pc.sold_out && c.sold_out) {
-        changes.push({
-          slug: ev.slug, title: ev.title, type: "category_sold_out",
-          details: { category: c.name },
-        });
-      }
-    }
-  }
-  return changes;
-}
-
-function hasChanged(prev: Event | undefined, curr: Event) {
-  if (!prev) return true;
-  if (prev.total_remaining !== curr.total_remaining) return true;
-  if (prev.urgency !== curr.urgency) return true;
-  // per-category remaining/sold_out check
-  const prevCats = new Map(prev.categories.map(c => [c.name, c]));
-  for (const c of curr.categories) {
-    const pc = prevCats.get(c.name);
-    if (!pc) return true;
-    if (pc.remaining !== c.remaining || pc.sold_out !== c.sold_out) return true;
-  }
-  return false;
-}
-
-/** Verify request comes from Vercel Cron (or local dev) */
 function isAuthorized(req: Request): boolean {
-  // In production, Vercel Cron sends a header with the secret
   const auth = req.headers.get("authorization");
   const secret = process.env.CRON_SECRET;
   if (secret) return auth === `Bearer ${secret}`;
-  // No secret configured → allow (development mode)
   return true;
+}
+
+async function dispatchWorkflow(workflow: string, token: string): Promise<{ ok: boolean; status: number; body?: string }> {
+  const r = await fetch(
+    `https://api.github.com/repos/${REPO}/actions/workflows/${workflow}/dispatches`,
+    {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+        "User-Agent": "ahlan-monitor-cron",
+      },
+      body: JSON.stringify({ ref: REF }),
+    }
+  );
+  return {
+    ok: r.status === 204,   // GH returns 204 No Content on success
+    status: r.status,
+    body: r.status === 204 ? undefined : (await r.text()).slice(0, 200),
+  };
 }
 
 export async function GET(req: Request) {
@@ -110,44 +67,45 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
+  const token = process.env.GH_DISPATCH_TOKEN;
+  if (!token) {
+    return NextResponse.json({
+      ok: false,
+      error: "GH_DISPATCH_TOKEN not configured",
+    }, { status: 503 });
+  }
+
   const t0 = Date.now();
-  await initSchema();
+  const now = new Date();
+  const minute = now.getUTCMinutes();
+  const url = new URL(req.url);
+  const force = url.searchParams.get("force"); // "priority" | "all" | "both" | null
 
-  // Get previous state (so we can detect changes)
-  const { events: prevEvents } = await getLatestEvents();
+  const dispatched: Array<{ workflow: string; ok: boolean; status: number; body?: string }> = [];
+  const skipped: string[] = [];
 
-  // Fetch all 51 events from ahlan.sa in parallel
-  const raw = await Promise.all(AFC_2027_SLUGS.map(fetchOne));
-  const curr = AFC_2027_SLUGS.map((s, i) => normalizeEvent(s, raw[i]));
+  const wantPriority = force === "priority" || force === "both" || minute % 3 === 0;
+  const wantAll      = force === "all"      || force === "both" || minute % 10 === 0;
 
-  // Detect changes vs previous snapshot
-  const changes = prevEvents.length ? detectChanges(prevEvents, curr) : [];
-
-  const ts = Math.floor(Date.now() / 1000);
-  const prevBySlug = new Map(prevEvents.map(e => [e.slug, e]));
-
-  // Store snapshots (only insert history row if changed)
-  let inserted = 0;
-  await Promise.all(curr.map(async ev => {
-    if (ev.error) return;
-    const changed = hasChanged(prevBySlug.get(ev.slug), ev);
-    await recordSnapshot(ev, ts, changed);
-    if (changed) inserted++;
-  }));
-
-  // Store changes log
-  for (const ch of changes) {
-    await recordChange(ts, ch.slug, ch.title, ch.type, ch.details);
+  if (wantPriority) {
+    const r = await dispatchWorkflow(WF_PRIO, token);
+    dispatched.push({ workflow: WF_PRIO, ...r });
+  } else {
+    skipped.push(WF_PRIO);
+  }
+  if (wantAll) {
+    const r = await dispatchWorkflow(WF_ALL, token);
+    dispatched.push({ workflow: WF_ALL, ...r });
+  } else {
+    skipped.push(WF_ALL);
   }
 
   return NextResponse.json({
     ok: true,
-    ts,
+    ts: Math.floor(Date.now() / 1000),
+    minute_utc: minute,
     elapsed_ms: Date.now() - t0,
-    events_fetched: curr.length,
-    events_ok: curr.filter(e => !e.error).length,
-    snapshots_inserted: inserted,
-    changes_detected: changes.length,
-    sample_changes: changes.slice(0, 5),
-  });
+    dispatched,
+    skipped,
+  }, { headers: { "Cache-Control": "no-store" } });
 }
