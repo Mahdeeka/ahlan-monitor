@@ -171,29 +171,40 @@ async function runBuyFlow(order) {
     return null;
   }
 
-  // ── 0. Quick auth check (no fixed sleep — re-check below if early) ──
-  if (location.pathname.toLowerCase().includes("/signin")) {
+  // ── 0. Auth detection via REAL signals, not cookie sniffing ────────────
+  // The old `hasTokenCookie()` check was unreliable because ahlan.sa sets
+  // its token as HttpOnly (invisible to JS). Sometimes it leaked, sometimes
+  // it didn't — explaining "auth_error" for users who were clearly logged in.
+  //
+  // New approach: only treat auth as broken if (a) we're sitting on /Signin
+  // right now, or (b) the actual API calls below return 401, or (c) the
+  // page bounces to /Signin mid-flow. Otherwise, assume logged in and try.
+  if (location.pathname.toLowerCase().includes("/signin") ||
+      location.pathname.toLowerCase().includes("/login")) {
     report("auth_error", {
-      error_msg: "Not logged in to ahlan.sa",
-      notes: "Sign in once at https://www.ahlan.sa, then re-queue the order.",
+      error_msg: "Bounced to /Signin — not logged in to ahlan.sa",
+      notes: "Open https://www.ahlan.sa once in this browser, sign in, then re-queue.",
     });
     return;
   }
-  if (!hasTokenCookie()) {
-    // Token cookie sometimes lands a beat after navigation finishes — wait briefly
-    const cookieOk = await waitFor(hasTokenCookie, { timeout: 2000, interval: 100 });
-    if (!cookieOk) {
-      report("auth_error", { error_msg: "Not logged in to ahlan.sa" });
-      return;
-    }
-  }
+  // Watch for mid-flow auth redirect
+  let _authBounced = false;
+  const _origPush = history.pushState.bind(history);
+  history.pushState = function (...args) {
+    const url = String(args[2] || "").toLowerCase();
+    if (url.includes("/signin") || url.includes("/login")) _authBounced = true;
+    return _origPush(...args);
+  };
 
   // ── PARALLEL: kick off eventDetail fetch RIGHT NOW (doesn't need queue-token) ──
   const eventDetailPromise = fetch(
     `/api/ticketing/eventDetail?slug=${encodeURIComponent(order.slug)}&language=en`,
     { credentials: "include", headers: { Accept: "application/json" } }
-  ).then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-   .catch(e => ({ _error: e.message }));
+  ).then(async r => {
+    if (r.status === 401 || r.status === 403) return { _error: `HTTP ${r.status}`, _auth: true };
+    if (!r.ok) return { _error: `HTTP ${r.status}` };
+    return r.json();
+  }).catch(e => ({ _error: e.message }));
 
   // ── 1. Click Find Tickets the moment it appears ─────────────────────
   let findBtn = await waitFor(findFindTicketsBtn, { timeout: 8000, interval: 50 });
@@ -209,13 +220,29 @@ async function runBuyFlow(order) {
   sendTiming({ tFindClick });
 
   // ── 2. Wait for queue-token (poll every 40ms — usually appears in <300ms) ──
-  const queueToken = await waitFor(readQueueToken, { timeout: 8000, interval: 40 });
+  // If Find Tickets click bounced us to /Signin or we see no token, treat as auth
+  const queueToken = await waitFor(() => {
+    if (_authBounced || location.pathname.toLowerCase().includes("/signin")) return "__AUTH_BOUNCE__";
+    return readQueueToken();
+  }, { timeout: 10000, interval: 40 });
   const tQueueToken = Date.now();
   sendTiming({ tQueueToken });
+  if (queueToken === "__AUTH_BOUNCE__") {
+    report("auth_error", {
+      error_msg: "Find Tickets click bounced to sign-in",
+      notes: "Session expired or not logged in — sign in to ahlan.sa and re-queue.",
+    });
+    return;
+  }
   if (!queueToken) {
+    // Could be slow page OR could be unauthenticated. Check URL.
+    if (location.pathname.toLowerCase().includes("/signin")) {
+      report("auth_error", { error_msg: "Bounced to sign-in after Find Tickets click" });
+      return;
+    }
     report("failed", {
-      error_msg: "queue-token never appeared",
-      notes: "Find Tickets click did not initialize the queue. Try refreshing.",
+      error_msg: "queue-token never appeared (10s timeout)",
+      notes: "Find Tickets clicked but the SPA didn't generate a queue-token. Try refreshing ahlan.sa to verify you're really logged in.",
     });
     return;
   }
@@ -227,7 +254,11 @@ async function runBuyFlow(order) {
   const tEventDetail = Date.now();
   sendTiming({ tEventDetail });
   if (eventDetail._error) {
-    report("failed", { error_msg: `eventDetail fetch failed: ${eventDetail._error}` });
+    if (eventDetail._auth) {
+      report("auth_error", { error_msg: `eventDetail ${eventDetail._error} — not authenticated` });
+    } else {
+      report("failed", { error_msg: `eventDetail fetch failed: ${eventDetail._error}` });
+    }
     return;
   }
 
@@ -313,7 +344,14 @@ async function runBuyFlow(order) {
     const body = ct.includes("json") ? await r.json() : await r.text();
     if (!r.ok) {
       const bodyStr = typeof body === "string" ? body : JSON.stringify(body);
-      report("failed", { error_msg: `checkout HTTP ${r.status}`, notes: bodyStr.slice(0, 200) });
+      if (r.status === 401 || r.status === 403) {
+        report("auth_error", {
+          error_msg: `checkout HTTP ${r.status} — session expired`,
+          notes: "Re-login to ahlan.sa and re-queue.",
+        });
+      } else {
+        report("failed", { error_msg: `checkout HTTP ${r.status}`, notes: bodyStr.slice(0, 200) });
+      }
       return;
     }
     coResp = body;
