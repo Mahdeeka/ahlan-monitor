@@ -161,6 +161,25 @@ async function handleOrder(order, pushedAt) {
 
   // Stash order context — content.js asks for it on load
   await chrome.storage.session.set({ [`order_${tab.id}`]: { ...order, _tStart: t0 } });
+
+  // Push the order to content.js NOW — covers the race where content.js
+  // already loaded BEFORE we got the order (the pre-arm tab case). If
+  // content.js isn't loaded yet, the send fails silently and content.js
+  // will pick up the order via its initial content_ready handshake.
+  // Retry a few times because the page might still be loading.
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      await chrome.tabs.sendMessage(tab.id, {
+        type: "process_order",
+        order: { ...order, _tStart: t0 },
+      });
+      console.log(`[ahlan-bg] pushed order ${order.id} to tab ${tab.id} (attempt ${attempt + 1})`);
+      break;
+    } catch (e) {
+      // "Could not establish connection" = content.js not loaded yet, retry
+      await new Promise(r => setTimeout(r, 300));
+    }
+  }
 }
 
 /* ─── content.js → background message bridge ──────────────────────────── */

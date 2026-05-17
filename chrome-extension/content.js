@@ -18,19 +18,63 @@
  *
  * NEVER submits payment. The tab simply lands on PayTabs ready for human.
  */
-(async () => {
-  if (window.__ahlan_ext_loaded) return;
+// content.js loads on every ahlan.sa page. Two ways it can be told to act:
+//   (a) Background already had an order assigned to this tab when we loaded
+//       → content_ready returns the order → fire immediately.
+//   (b) Background gets the order AFTER we load (pre-arm tab pattern)
+//       → background calls chrome.tabs.sendMessage(tabId, {type:"process_order"})
+//       → our onMessage listener fires processOrder.
+// If neither happens in 60s, we sit quietly (user might just be browsing).
+
+if (!window.__ahlan_ext_loaded) {
   window.__ahlan_ext_loaded = true;
 
-  const tContentStart = Date.now();
-  let order = null;
-  try {
-    const r = await chrome.runtime.sendMessage({ type: "content_ready" });
-    order = r?.order || null;
-  } catch (e) { return; }
-  if (!order) return; // user is just browsing — don't interfere
+  let _orderProcessing = false;
+  const tContentLoad = Date.now();
 
-  console.log("[Ahlan Ext] order received:", order);
+  function processOrder(order) {
+    if (_orderProcessing) return;
+    _orderProcessing = true;
+    runBuyFlow(order).catch(e => {
+      console.error("[Ahlan Ext] runBuyFlow exception:", e);
+      try {
+        chrome.runtime.sendMessage({
+          type: "content_status",
+          status: "failed",
+          error_msg: `exception: ${String(e?.message || e).slice(0, 200)}`,
+        });
+      } catch {}
+    });
+  }
+
+  // Listener: background pushes orders that arrive after we loaded
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg?.type === "process_order" && msg.order) {
+      console.log("[Ahlan Ext] order pushed from background:", msg.order);
+      processOrder(msg.order);
+      sendResponse({ ok: true });
+    }
+    return true;
+  });
+
+  // On load: ask background if it already has an order for us
+  (async () => {
+    try {
+      const r = await chrome.runtime.sendMessage({ type: "content_ready" });
+      if (r?.order) {
+        console.log("[Ahlan Ext] order already present:", r.order);
+        processOrder(r.order);
+      } else {
+        console.log("[Ahlan Ext] loaded, no order yet — waiting for push");
+      }
+    } catch (e) { /* extension context invalidated */ }
+  })();
+}
+
+// ─────────── Buy flow (called once per page load when an order arrives) ─────
+async function runBuyFlow(order) {
+  const tContentStart = Date.now();
+
   const sendTiming = (extra) => {
     try {
       chrome.runtime.sendMessage({
@@ -317,4 +361,4 @@
   document.title = `🟢 PAY NOW · ${catName} ×${qty}`;
   // Redirect immediately — no artificial sleep
   window.location.href = paymentUrl;
-})();
+}
