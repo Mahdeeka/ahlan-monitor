@@ -77,10 +77,22 @@ console.log("[ahlan-ext] content.js loaded at", location.href, "readyState:", do
 })();
 
 // ────────────────────────────────────────────────────────────────────────
-// Auto-login with stored credentials
+// Auto-login with stored credentials — UI form fill (NOT API POST)
+//
+// API POST login didn't fully establish the SPA session — ahlan reads
+// auth state from places beyond cookies (localStorage / Redux). So we
+// just do what a human does: fill the form, click Login. Slower (~3s)
+// but actually works.
 // ────────────────────────────────────────────────────────────────────────
+function setReactInputValue(input, value) {
+  // React tracks input values internally; bypass that with the native setter
+  const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+  nativeSetter.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 async function tryAutoLogin(order, hudStatus, hudStep, hudAction) {
-  // Read settings + accounts
   const s = await new Promise(r => chrome.storage.local.get(["autoLogin", "ahlan_accounts"], r));
   if (s.autoLogin === false) return "disabled";
   const list = s.ahlan_accounts || [];
@@ -89,50 +101,101 @@ async function tryAutoLogin(order, hudStatus, hudStep, hudAction) {
   const available = list.filter(a => a.email && a.password && !a.used_at && !a.failed_at);
   if (available.length === 0) return "all_used";
 
+  // We need to be ON the /Signin page to fill the form. If we're not, navigate.
+  if (!/\/(signin|login)/i.test(location.pathname)) {
+    hudStatus("Navigating to /Signin to log in…", "busy");
+    sessionStorage.setItem("__ahlan_pending_order", JSON.stringify(order));
+    location.replace("https://www.ahlan.sa/Signin?url_redirect=events%2Fdetails%3Fevent%3D" + encodeURIComponent(order.slug));
+    return "navigated";
+  }
+
   hudStatus(`Auto-login: trying ${available.length} stored account(s)…`, "busy");
 
+  // Wait for the email + password inputs to appear (SPA hydration)
+  async function findInputs() {
+    let emailIn = null, pwIn = null;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 8000) {
+      emailIn = document.querySelector('input[type="email"], input[name="email"], input[placeholder*="mail" i]');
+      pwIn    = document.querySelector('input[type="password"]');
+      if (emailIn && pwIn) return { emailIn, pwIn };
+      await new Promise(r => setTimeout(r, 100));
+    }
+    return null;
+  }
+  function findLoginBtn() {
+    const cands = document.querySelectorAll('button[type="submit"], button, [role="button"]');
+    for (const b of cands) {
+      const t = (b.textContent || "").trim().toLowerCase();
+      if (t === "login" || t === "log in" || t === "sign in" || t === "submit") return b;
+    }
+    return null;
+  }
+
+  const ins = await findInputs();
+  if (!ins) {
+    hudStatus("Couldn't find sign-in form on this page", "err");
+    return "form_not_found";
+  }
+
+  // Try each available account in turn until one succeeds
   for (const acc of available) {
-    hudStep(`Logging in as ${acc.email}`, "busy");
-    try {
-      const r = await fetch("/api/auth/login", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ email: acc.email, password: acc.password, language: "en" }),
-      });
-      if (!r.ok) {
-        const body = await r.text().catch(() => "");
-        hudUpdateLast("err");
-        // Mark as failed so we don't retry this account
-        await markAccountFailed(acc.email, `HTTP ${r.status}: ${body.slice(0, 80)}`);
-        continue;
-      }
-      const data = await r.json();
-      const token = data.access_token || data?.data?.access_token;
-      const refresh = data.refresh_token || data?.data?.refresh_token;
-      if (!token) {
-        hudUpdateLast("err");
-        await markAccountFailed(acc.email, "no access_token in response");
-        continue;
-      }
-      // Set cookies via JS so the next request is authenticated
-      document.cookie = `token=${token}; path=/; secure; SameSite=Lax; max-age=86400`;
-      if (refresh) document.cookie = `refresh-token=${refresh}; path=/; secure; SameSite=Lax; max-age=2592000`;
-      // Remember which account we used for this order — so we can mark it used on success
-      try { sessionStorage.setItem("__ahlan_active_account", JSON.stringify({ email: acc.email })); } catch {}
+    hudStep(`Login as ${acc.email}`, "busy");
+    setReactInputValue(ins.emailIn, acc.email);
+    setReactInputValue(ins.pwIn,    acc.password);
+    await new Promise(r => setTimeout(r, 250));
+
+    const loginBtn = findLoginBtn();
+    if (!loginBtn) {
+      hudUpdateLast("err");
+      hudStatus("Found form but no Login button", "err");
+      return "btn_not_found";
+    }
+
+    try { sessionStorage.setItem("__ahlan_active_account", JSON.stringify({ email: acc.email })); } catch {}
+    loginBtn.click();
+
+    // Wait until either:
+    //  - URL changes off /Signin → success
+    //  - 6 s elapse → likely failed credentials (button click did nothing or
+    //    page reloaded back to /Signin)
+    const startUrl = location.href;
+    const outcome = await new Promise(resolve => {
+      const t0 = Date.now();
+      const iv = setInterval(() => {
+        const stillSignin = /\/(signin|login)/i.test(location.pathname);
+        if (location.href !== startUrl && !stillSignin) {
+          clearInterval(iv); resolve("nav_off_signin");
+        } else if (Date.now() - t0 > 6000) {
+          clearInterval(iv); resolve("timeout");
+        } else if (!stillSignin) {
+          clearInterval(iv); resolve("nav_off_signin");
+        }
+      }, 150);
+    });
+
+    if (outcome === "nav_off_signin") {
       hudUpdateLast("ok");
       hudStatus(`✓ Logged in as ${acc.email} — loading match page…`, "ok");
-      // Navigate to the event page
       setTimeout(() => {
         location.replace(`https://www.ahlan.sa/events/details?event=${encodeURIComponent(order.slug)}`);
-      }, 200);
+      }, 400);
       return "navigated";
-    } catch (e) {
-      hudUpdateLast("err");
-      await markAccountFailed(acc.email, String(e).slice(0, 80));
-      continue;
     }
+
+    // Still on /Signin after click — wrong password / banned / captcha
+    hudUpdateLast("err");
+    await markAccountFailed(acc.email, "still on /Signin 6s after click");
+    // Clear the form for the next attempt
+    try {
+      setReactInputValue(ins.emailIn, "");
+      setReactInputValue(ins.pwIn,    "");
+    } catch {}
+    hudStatus(`${acc.email} login failed — trying next…`, "warn");
+    await new Promise(r => setTimeout(r, 500));
   }
+
+  hudStatus(`All ${available.length} stored accounts failed to log in.`, "err");
   return "failed";
 }
 
