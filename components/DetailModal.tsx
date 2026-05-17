@@ -591,12 +591,8 @@ function CategoryBuyControls({
   async function enqueue() {
     setState("loading"); setMsg("");
 
-    // Check if extension bridge is loaded — if not, warn user clearly
     const ext = typeof window !== "undefined" ? (window as any).__ahlanExt : null;
-    const hasExt = !!(ext && typeof ext.openTabFor === "function");
-    if (hasExt) {
-      try { ext.openTabFor(slug); } catch {/* */}
-    }
+    const hasExt = !!(ext && typeof ext.openOrder === "function");
 
     try {
       const r = await fetch("/api/buy/enqueue", {
@@ -613,10 +609,19 @@ function CategoryBuyControls({
       setOrderId(d.id);
       setState("queued");
       if (hasExt) {
-        setMsg(`Order #${d.id} queued · extension v${ext.version || "?"} fired · tab should open now`);
-        try { ext.sendBuyEnqueued(d.id, slug); } catch {/* */}
+        // v1.0: pass the FULL order to the extension via URL hash — no race
+        try {
+          ext.openOrder({
+            id: d.id, slug, title, category, qty,
+            max_price_sar: price > 0 ? price : null,
+          });
+          setMsg(`Order #${d.id} queued · ahlan.sa tab opening with order in hash · v${ext.version || "?"}`);
+        } catch (e: any) {
+          setMsg(`Order #${d.id} queued but extension call failed: ${e?.message || e}`);
+          setState("error");
+        }
       } else {
-        setMsg(`Order #${d.id} queued, BUT extension not detected — open ahlan.sa manually or install/reload the extension`);
+        setMsg(`Order #${d.id} queued, BUT extension not detected (v1.0+ needed). Reload it: edge://extensions`);
         setState("error");
       }
     } catch (e: any) {

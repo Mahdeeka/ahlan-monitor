@@ -1,14 +1,12 @@
 /**
- * background.js — service worker for the Ahlan Auto-Buy extension.
+ * background.js — service worker for the Ahlan Auto-Buy extension v1.0.
  *
- * Responsibilities:
- *   1. Poll the dashboard's /api/buy/queue every minute (chrome.alarms).
- *   2. For each pending order: claim it, open a tab to the right ahlan.sa
- *      event page, hand off to content.js for the in-page automation.
- *   3. When content.js reports back the cart state, POST /api/buy/complete.
- *   4. Fire OS notifications: "cart parked at payment", "logged out — log in first", etc.
+ * Massively simplified vs v0.x. No queue polling, no race conditions, no
+ * IPC timing. The dashboard generates a URL with the order in the hash;
+ * we just open the tab; content.js reads the hash and does the buy.
  *
- * Settings live in chrome.storage.local. See options.js.
+ * Optional: keep a minimal queue poller as a SAFETY NET for orders that
+ * weren't initiated from the dashboard (e.g. future auto-buy rules).
  */
 
 const DEFAULT_SETTINGS = {
@@ -18,13 +16,11 @@ const DEFAULT_SETTINGS = {
   workerId: "chrome-ext",
 };
 
-/* ─── settings ────────────────────────────────────────────────────────── */
 async function getSettings() {
   const s = await chrome.storage.local.get(DEFAULT_SETTINGS);
   return { ...DEFAULT_SETTINGS, ...s };
 }
 
-/* ─── HTTP helpers ────────────────────────────────────────────────────── */
 async function api(path, opts = {}) {
   const s = await getSettings();
   const url = s.dashboardUrl.replace(/\/+$/, "") + path;
@@ -33,35 +29,6 @@ async function api(path, opts = {}) {
   return fetch(url, { ...opts, headers, cache: "no-store" });
 }
 
-async function fetchQueue() {
-  const r = await api("/api/buy/queue");
-  if (r.status === 401) throw new Error("unauthorized — token missing or wrong");
-  if (!r.ok) throw new Error(`queue HTTP ${r.status}`);
-  const data = await r.json();
-  return data.orders || [];
-}
-
-async function claimOrder(id, workerId) {
-  const r = await api(`/api/buy/claim/${id}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ worker_id: workerId }),
-  });
-  if (r.status === 409) return null; // someone else got it
-  if (!r.ok) throw new Error(`claim HTTP ${r.status}`);
-  const data = await r.json();
-  return data.order;
-}
-
-async function completeOrder(id, payload) {
-  return api(`/api/buy/complete/${id}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-}
-
-/* ─── notifications ───────────────────────────────────────────────────── */
 function notify(title, message, kind = "basic") {
   chrome.notifications.create("", {
     type: "basic",
@@ -72,202 +39,97 @@ function notify(title, message, kind = "basic") {
   });
 }
 
-/* ─── activity log (popup reads this) ─────────────────────────────────── */
 async function logActivity(entry) {
   const { activity = [] } = await chrome.storage.local.get(["activity"]);
   activity.unshift({ ts: Date.now(), ...entry });
   await chrome.storage.local.set({ activity: activity.slice(0, 50) });
 }
 
-/* ─── core: handle one order ──────────────────────────────────────────── */
-const inFlight = new Set();           // order ids actively being processed
-const prearmedTabs = new Map();       // slug → { tabId, ts } — tabs opened before the order even exists
-const timings = new Map();            // orderId → { tStart, tPrearm, tClaim, tTab, tToken, tCheckout, tPay }
-
-async function prearmTab(slug, ts) {
-  // If we already have a fresh prearmed tab for this slug, reuse it
-  const existing = prearmedTabs.get(slug);
-  if (existing && Date.now() - existing.ts < 60_000) {
-    try {
-      const t = await chrome.tabs.get(existing.tabId);
-      if (t && !t.discarded) return existing.tabId;
-    } catch {/* tab closed */}
-    prearmedTabs.delete(slug);
-  }
-  const url = `https://www.ahlan.sa/events/details?event=${encodeURIComponent(slug)}`;
+/* ─── Open a tab for a buy order ──────────────────────────────────────── */
+async function openOrderTab(url, order) {
   try {
-    // active:true — user just clicked Buy, they WANT to see the tab open.
-    // (Earlier active:false was meant to "not steal focus" but made it look
-    // like nothing was happening.)
     const tab = await chrome.tabs.create({ url, active: true });
-    prearmedTabs.set(slug, { tabId: tab.id, ts: Date.now() });
-    await logActivity({ slug, status: "prearm", msg: `opened tab ${tab.id} for ${slug}` });
-    return tab.id;
+    await logActivity({
+      id: order?.id, slug: order?.slug, status: "opening",
+      msg: `tab ${tab.id} opened`,
+    });
+    return tab;
   } catch (e) {
-    await logActivity({ slug, status: "prearm_err", msg: e.message });
+    await logActivity({ id: order?.id, status: "open_err", msg: e.message });
+    notify("Buy failed", `Couldn't open tab: ${e.message}`);
     return null;
   }
 }
 
-async function handleOrder(order, pushedAt) {
-  if (inFlight.has(order.id)) return;
-  inFlight.add(order.id);
-  const t0 = pushedAt || Date.now();
-  timings.set(order.id, { tStart: t0 });
-
-  await logActivity({ id: order.id, slug: order.slug, status: "claiming",
-                       msg: `claiming order #${order.id}` });
-  const settings = await getSettings();
-  const claimed = await claimOrder(order.id, settings.workerId);
-  const tClaim = Date.now();
-  timings.set(order.id, { ...timings.get(order.id), tClaim });
-  if (!claimed) {
-    await logActivity({ id: order.id, status: "skipped", msg: "already claimed by another worker" });
-    inFlight.delete(order.id);
-    return;
-  }
-
-  // Reuse pre-armed tab if one exists for this slug
-  let tab;
-  let wasPrearmed = false;
-  const arm = prearmedTabs.get(order.slug);
-  if (arm) {
-    try {
-      tab = await chrome.tabs.get(arm.tabId);
-      prearmedTabs.delete(order.slug);
-      wasPrearmed = true;
-      // Bring it to front — user is waiting for visible progress
-      try { await chrome.tabs.update(arm.tabId, { active: true }); } catch {}
-    } catch { tab = null; }
-  }
-  if (!tab) {
-    const url = `https://www.ahlan.sa/events/details?event=${encodeURIComponent(order.slug)}`;
-    try {
-      tab = await chrome.tabs.create({ url, active: true });
-    } catch (e) {
-      await completeOrder(order.id, { status: "failed", error_msg: `tab open: ${e.message}` });
-      await logActivity({ id: order.id, status: "failed", msg: `tab open failed: ${e.message}` });
-      inFlight.delete(order.id);
-      return;
-    }
-  }
-  const tTab = Date.now();
-  timings.set(order.id, { ...timings.get(order.id), tTab });
-
-  notify(`Order #${order.id} firing`,
-         `${order.title || order.slug} · ${order.category} × ${order.qty} (${tTab - t0}ms to tab)`);
-  await logActivity({ id: order.id, slug: order.slug, status: "tab_open",
-                       msg: `tab ${tab.id} ready in ${tTab - t0}ms` });
-
-  // Stash order context — content.js asks for it on load
-  await chrome.storage.session.set({ [`order_${tab.id}`]: { ...order, _tStart: t0 } });
-
-  // Push the order to content.js NOW — covers the race where content.js
-  // already loaded BEFORE we got the order (the pre-arm tab case). If
-  // content.js isn't loaded yet, the send fails silently and content.js
-  // will pick up the order via its initial content_ready handshake.
-  // Retry a few times because the page might still be loading.
-  for (let attempt = 0; attempt < 8; attempt++) {
-    try {
-      await chrome.tabs.sendMessage(tab.id, {
-        type: "process_order",
-        order: { ...order, _tStart: t0 },
-      });
-      console.log(`[ahlan-bg] pushed order ${order.id} to tab ${tab.id} (attempt ${attempt + 1})`);
-      break;
-    } catch (e) {
-      // "Could not establish connection" = content.js not loaded yet, retry
-      await new Promise(r => setTimeout(r, 300));
-    }
-  }
-}
-
-/* ─── content.js → background message bridge ──────────────────────────── */
+/* ─── Message bridge ──────────────────────────────────────────────────── */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
-    if (msg?.type === "content_ready") {
-      const tabId = sender.tab?.id;
-      if (tabId == null) return sendResponse({});
-      const { [`order_${tabId}`]: order } = await chrome.storage.session.get([`order_${tabId}`]);
-      sendResponse({ order: order || null });
+    if (msg?.type === "open_order") {
+      await openOrderTab(msg.url, msg.order);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg?.type === "open_url") {
+      try { await chrome.tabs.create({ url: msg.url, active: true }); }
+      catch (e) { /* */ }
+      sendResponse({ ok: true });
       return;
     }
     if (msg?.type === "content_status") {
-      const tabId = sender.tab?.id;
-      const { [`order_${tabId}`]: order } = await chrome.storage.session.get([`order_${tabId}`]);
-      if (!order) return sendResponse({});
-      const { status, error_msg, notes, account_email, account_name } = msg;
-      await completeOrder(order.id, { status, error_msg, notes, account_email, account_name });
+      const { status, error_msg, notes, account_email, account_name, order_id } = msg;
+      if (order_id) {
+        try {
+          await api(`/api/buy/complete/${order_id}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status, error_msg, notes, account_email, account_name }),
+          });
+        } catch (e) { console.warn("complete failed", e); }
+      }
       await logActivity({
-        id: order.id, status,
+        id: order_id, status,
         msg: (account_email ? `[${account_email}] ` : "") + (notes || error_msg || ""),
       });
       if (status === "success") {
-        notify(`Cart ready · #${order.id}`,
-               `${order.title || order.slug}${account_email ? ` (${account_email})` : ""} — go pay!`, "alert");
+        notify(`Cart ready · #${order_id || "?"}`,
+               `${msg.title || msg.slug || ""}${account_email ? ` (${account_email})` : ""} — pay now!`, "alert");
       } else if (status === "auth_error") {
-        notify(`Login required`, `Sign in to ahlan.sa to process order #${order.id}`, "alert");
-      } else {
-        notify(`Order #${order.id} ${status}`, error_msg || notes || "");
+        notify("Sign in to ahlan.sa",
+               "The tab is waiting at the sign-in page. Log in, then we'll continue automatically.", "alert");
+      } else if (status === "failed") {
+        notify(`Order ${status}`, error_msg || notes || "");
       }
-      inFlight.delete(order.id);
-      sendResponse({ ok: true });
-      return;
-    }
-    if (msg?.type === "prearm_tab") {
-      await prearmTab(msg.slug, msg.ts);
-      sendResponse({ ok: true });
-      return;
-    }
-    if (msg?.type === "order_enqueued") {
-      // Direct push from dashboard — fire immediately, no alarm wait
-      await logActivity({ id: msg.orderId, status: "pushed",
-                          msg: `direct push (slug=${msg.slug || "?"})` });
-      // If we have a fresh queue order from /api/buy/queue, handleOrder it.
-      // Otherwise just kick off a poll which finds + handles it.
-      await runPoll(msg.ts);
       sendResponse({ ok: true });
       return;
     }
     if (msg?.type === "focus_tab") {
-      // content.js is done — bring its tab to front so user can pay
       const tabId = sender.tab?.id;
       if (tabId != null) {
         try {
           await chrome.tabs.update(tabId, { active: true });
-          const tab = await chrome.tabs.get(tabId);
-          if (tab.windowId != null) {
-            try { await chrome.windows.update(tab.windowId, { focused: true }); } catch {}
+          const t = await chrome.tabs.get(tabId);
+          if (t.windowId != null) {
+            try { await chrome.windows.update(t.windowId, { focused: true }); } catch {}
           }
         } catch {}
       }
       sendResponse({ ok: true });
       return;
     }
-    if (msg?.type === "content_timing") {
-      // content.js telling us per-step durations
-      const tabId = sender.tab?.id;
-      const { [`order_${tabId}`]: order } = await chrome.storage.session.get([`order_${tabId}`]);
-      if (order) {
-        const prior = timings.get(order.id) || {};
-        timings.set(order.id, { ...prior, ...msg.timing });
-        await chrome.storage.local.set({ lastTiming: { id: order.id, slug: order.slug, ...prior, ...msg.timing } });
-      }
-      sendResponse({ ok: true });
-      return;
-    }
     if (msg?.type === "poll_now") {
-      await runPoll();
+      // Manual poll button in popup — fall back to the old behavior so users
+      // can fire orders queued without going through the dashboard bridge.
+      await runFallbackPoll();
       sendResponse({ ok: true });
       return;
     }
     sendResponse({ ok: false, error: "unknown type" });
   })();
-  return true; // async response
+  return true;
 });
 
-/* ─── periodic poll ───────────────────────────────────────────────────── */
-async function runPoll(pushedAt) {
+/* ─── Safety-net poller for non-dashboard orders ─────────────────────── */
+async function runFallbackPoll() {
   const s = await getSettings();
   if (!s.enabled) return;
   if (!s.workerToken) {
@@ -275,36 +137,31 @@ async function runPoll(pushedAt) {
     return;
   }
   try {
-    const orders = await fetchQueue();
+    const r = await api("/api/buy/queue");
+    if (r.status === 401) throw new Error("unauthorized");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
     await chrome.storage.local.set({ lastPollOk: Date.now(), lastError: null });
-    for (const o of orders) {
-      await handleOrder(o, pushedAt);
+    for (const o of (data.orders || [])) {
+      const url = `https://www.ahlan.sa/events/details?event=${encodeURIComponent(o.slug)}#__ahlan_buy=${
+        btoa(unescape(encodeURIComponent(JSON.stringify(o))))
+      }`;
+      await openOrderTab(url, o);
     }
   } catch (e) {
     await chrome.storage.local.set({ lastError: String(e).slice(0, 200) });
   }
 }
 
-/* ─── alarms ──────────────────────────────────────────────────────────── */
-// MV3 minimum granularity is 30s (= 0.5 min). When dashboard is open and
-// pushes directly via window.postMessage, polling is irrelevant — this is
-// only the fallback for closed-dashboard scenarios (e.g. an auto-buy rule
-// firing while you're not looking at the tab).
-const POLL_PERIOD_MIN = 0.5;
-
 chrome.runtime.onInstalled.addListener(async () => {
-  chrome.alarms.create("poll-queue", { periodInMinutes: POLL_PERIOD_MIN });
+  // Slow safety-net poll every 5 minutes for orders not initiated via dashboard
+  chrome.alarms.create("safety-poll", { periodInMinutes: 5 });
   await chrome.storage.local.set({ installedAt: Date.now() });
-  await logActivity({ status: "installed", msg: "extension installed (v0.2 — push-enabled)" });
+  await logActivity({ status: "installed", msg: "extension installed (v1.0)" });
 });
-
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create("poll-queue", { periodInMinutes: POLL_PERIOD_MIN });
+  chrome.alarms.create("safety-poll", { periodInMinutes: 5 });
 });
-
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === "poll-queue") await runPoll();
+  if (alarm.name === "safety-poll") await runFallbackPoll();
 });
-
-// Kick off an immediate poll on service-worker wake
-runPoll().catch(() => {});

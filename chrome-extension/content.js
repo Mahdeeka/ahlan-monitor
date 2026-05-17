@@ -1,167 +1,134 @@
 /**
- * content.js — runs in every ahlan.sa page.
+ * content.js — runs on every ahlan.sa page. Reads the order from the URL
+ * hash (#__ahlan_buy=<base64>) if present, then drives the cart flow with
+ * a VISIBLE STATUS BANNER so the user can always see what's happening.
  *
- * On load, asks background: "do you have an order for this tab?"
- *   - No order: do nothing (user is just browsing).
- *   - Order: API-direct checkout, then land on PayTabs payment page.
- *
- * Flow (API, not UI — same as ahlan_buy_max.buy_for_user_api):
- *   1. Confirm user is logged in (token cookie present).
- *   2. Click "Find Tickets" once (this triggers the SPA to issue a
- *      queue-token into localStorage). It's the only DOM step.
- *   3. Wait for `persist:nextjs-sitecore-root → event.queueToken`.
- *   4. fetch /api/ticketing/eventDetail?slug=<slug> → ticket_id matching
- *      the requested category (or best by priority), team_id, max_per_order.
- *   5. fetch POST /api/ticketing/nonSeatedCheckout with queue-token header
- *      → response.data.redirect_url is the PayTabs payment URL.
- *   6. window.location = redirect_url. User sees payment page, enters Visa.
- *
- * NEVER submits payment. The tab simply lands on PayTabs ready for human.
+ * v1.0 — simpler, no IPC race, recovers from sign-in interstitial.
  */
-// content.js loads on every ahlan.sa page. Two ways it can be told to act:
-//   (a) Background already had an order assigned to this tab when we loaded
-//       → content_ready returns the order → fire immediately.
-//   (b) Background gets the order AFTER we load (pre-arm tab pattern)
-//       → background calls chrome.tabs.sendMessage(tabId, {type:"process_order"})
-//       → our onMessage listener fires processOrder.
-// If neither happens in 60s, we sit quietly (user might just be browsing).
 
-if (!window.__ahlan_ext_loaded) {
+(function () {
+  if (window.__ahlan_ext_loaded) return;
   window.__ahlan_ext_loaded = true;
 
-  let _orderProcessing = false;
-  const tContentLoad = Date.now();
-
-  function processOrder(order) {
-    if (_orderProcessing) return;
-    _orderProcessing = true;
-    runBuyFlow(order).catch(e => {
-      console.error("[Ahlan Ext] runBuyFlow exception:", e);
-      try {
-        chrome.runtime.sendMessage({
-          type: "content_status",
-          status: "failed",
-          error_msg: `exception: ${String(e?.message || e).slice(0, 200)}`,
-        });
-      } catch {}
-    });
-  }
-
-  // Listener: background pushes orders that arrive after we loaded
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg?.type === "process_order" && msg.order) {
-      console.log("[Ahlan Ext] order pushed from background:", msg.order);
-      processOrder(msg.order);
-      sendResponse({ ok: true });
-    }
-    return true;
-  });
-
-  // On load: ask background if it already has an order for us
-  (async () => {
+  // ── Pull order from URL hash ─────────────────────────────────────────
+  const hashKey = "__ahlan_buy=";
+  const idx = location.hash.indexOf(hashKey);
+  if (idx < 0) {
+    // Maybe we got here via a sign-in redirect that stripped the hash.
+    // Try sessionStorage where we stashed it just before any /Signin bounce.
+    const cached = sessionStorage.getItem("__ahlan_pending_order");
+    if (!cached) return; // not our tab
     try {
-      const r = await chrome.runtime.sendMessage({ type: "content_ready" });
-      if (r?.order) {
-        console.log("[Ahlan Ext] order already present:", r.order);
-        processOrder(r.order);
-      } else {
-        console.log("[Ahlan Ext] loaded, no order yet — waiting for push");
-      }
-    } catch (e) { /* extension context invalidated */ }
-  })();
+      const order = JSON.parse(cached);
+      console.log("[ahlan-ext] resumed order from sessionStorage after redirect", order);
+      sessionStorage.removeItem("__ahlan_pending_order");
+      runFlow(order);
+    } catch { /* */ }
+    return;
+  }
+  let order;
+  try {
+    const b64 = location.hash.slice(idx + hashKey.length).split("&")[0];
+    order = JSON.parse(decodeURIComponent(escape(atob(b64))));
+  } catch (e) {
+    console.warn("[ahlan-ext] bad hash payload", e);
+    return;
+  }
+  // Stash so we can recover after any /Signin bounce that strips the hash
+  try { sessionStorage.setItem("__ahlan_pending_order", JSON.stringify(order)); } catch {}
+  // Clean the hash so reloads don't re-fire
+  try { history.replaceState(null, "", location.pathname + location.search); } catch {}
+
+  runFlow(order);
+})();
+
+// ────────────────────────────────────────────────────────────────────────
+// Status HUD overlay — visible feedback for every step
+// ────────────────────────────────────────────────────────────────────────
+function ensureHud() {
+  let el = document.getElementById("__ahlan_hud");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "__ahlan_hud";
+  el.style.cssText = `
+    position:fixed; top:12px; right:12px; z-index:2147483647;
+    width:340px; max-width:calc(100vw - 24px);
+    background:rgba(15,23,42,0.97); color:#e2e8f0;
+    border:1px solid rgba(99,102,241,0.5);
+    border-radius:12px; padding:12px 14px;
+    font:13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    box-shadow:0 8px 24px rgba(0,0,0,0.35);
+    backdrop-filter:blur(8px);
+  `;
+  el.innerHTML = `
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+      <span style="font-size:18px;">🛒</span>
+      <strong style="flex:1;">Ahlan Auto-Buy</strong>
+      <button id="__ahlan_close" style="background:transparent;border:0;color:#94a3b8;cursor:pointer;font-size:16px;line-height:1;padding:0 4px;">×</button>
+    </div>
+    <div id="__ahlan_hud_status" style="font-size:12px;color:#cbd5e1;"></div>
+    <div id="__ahlan_hud_steps" style="margin-top:8px;font-size:11px;line-height:1.6;color:#94a3b8;"></div>
+    <div id="__ahlan_hud_action" style="margin-top:10px;"></div>
+  `;
+  document.documentElement.appendChild(el);
+  document.getElementById("__ahlan_close").onclick = () => el.remove();
+  return el;
+}
+const steps = [];
+function hudStatus(text, tone = "info") {
+  const el = ensureHud();
+  const s = el.querySelector("#__ahlan_hud_status");
+  const colors = {
+    info: "#cbd5e1", busy: "#a5b4fc", ok: "#86efac",
+    warn: "#fde047", err: "#fca5a5",
+  };
+  s.style.color = colors[tone] || "#cbd5e1";
+  s.textContent = text;
+}
+function hudStep(text, ok = "wait") {
+  steps.push({ text, ok });
+  const icons = { wait: "•", busy: "⏳", ok: "✓", err: "✗" };
+  const colors = { wait: "#64748b", busy: "#a5b4fc", ok: "#86efac", err: "#fca5a5" };
+  const el = ensureHud();
+  el.querySelector("#__ahlan_hud_steps").innerHTML =
+    steps.map(s => `<div style="color:${colors[s.ok]||"#94a3b8"};">${icons[s.ok]||"·"} ${s.text}</div>`).join("");
+}
+function hudUpdateLast(ok) {
+  if (steps.length === 0) return;
+  steps[steps.length - 1].ok = ok;
+  hudStep("", null); // re-render
+  steps.pop(); // remove the empty placeholder we just appended
+  // Actually rebuild cleanly:
+  const el = ensureHud();
+  const icons = { wait: "•", busy: "⏳", ok: "✓", err: "✗" };
+  const colors = { wait: "#64748b", busy: "#a5b4fc", ok: "#86efac", err: "#fca5a5" };
+  el.querySelector("#__ahlan_hud_steps").innerHTML =
+    steps.map(s => `<div style="color:${colors[s.ok]||"#94a3b8"};">${icons[s.ok]||"·"} ${s.text}</div>`).join("");
+}
+function hudAction(html) {
+  ensureHud().querySelector("#__ahlan_hud_action").innerHTML = html;
 }
 
-// ─────────── Buy flow (called once per page load when an order arrives) ─────
-async function runBuyFlow(order) {
-  const tContentStart = Date.now();
+// ────────────────────────────────────────────────────────────────────────
+// Buy flow
+// ────────────────────────────────────────────────────────────────────────
+async function runFlow(order) {
+  hudStatus(`Order #${order.id || "?"} · ${order.category} × ${order.qty}`, "busy");
+  hudStep(`Open match: ${order.title || order.slug}`, "ok");
 
-  const sendTiming = (extra) => {
-    try {
-      chrome.runtime.sendMessage({
-        type: "content_timing",
-        timing: { tContentStart, ...extra },
-      });
-    } catch (e) {/* */}
-  };
-
-  // ── helpers ──────────────────────────────────────────────────────────
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const report = (status, opts = {}) => {
     try {
       chrome.runtime.sendMessage({
         type: "content_status", status,
         error_msg: opts.error_msg, notes: opts.notes,
         account_email: opts.account_email, account_name: opts.account_name,
+        order_id: order.id, slug: order.slug, title: order.title,
       });
     } catch (e) {/* */}
   };
-  function hasTokenCookie() {
-    return document.cookie.split("; ").some(c => c.startsWith("token=") && c.length > 10);
-  }
-  function getTokenCookie() {
-    const c = document.cookie.split("; ").find(c => c.startsWith("token="));
-    return c ? c.slice("token=".length) : null;
-  }
-  function detectAccount() {
-    // 1) Try JWT decode from token cookie
-    const tok = getTokenCookie();
-    if (tok && tok.split(".").length >= 2) {
-      try {
-        const payload = JSON.parse(atob(tok.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-        const email = payload.email || payload.user_email || payload.sub || null;
-        const name = payload.name || payload.full_name || payload.firstName || null;
-        if (email && email.includes("@")) return { email, name };
-      } catch (e) {/* not a JWT */}
-    }
-    // 2) Try persist:nextjs-sitecore-root → user.email
-    try {
-      const raw = localStorage.getItem("persist:nextjs-sitecore-root");
-      if (raw) {
-        const root = JSON.parse(raw);
-        const candidates = ["user", "auth", "profile", "account"];
-        for (const k of candidates) {
-          if (!root[k]) continue;
-          const obj = typeof root[k] === "string" ? JSON.parse(root[k]) : root[k];
-          const email = obj.email || obj.user_email || obj?.user?.email || null;
-          const name = obj.name || obj?.user?.name || obj?.user?.first_name || null;
-          if (email && String(email).includes("@")) return { email, name };
-        }
-      }
-    } catch (e) {/* */}
-    // 3) Try other localStorage keys
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (!key) continue;
-        const v = localStorage.getItem(key);
-        if (v && /"email"\s*:\s*"[^"]+@[^"]+"/.test(v)) {
-          const m = v.match(/"email"\s*:\s*"([^"]+@[^"]+)"/);
-          const n = v.match(/"(?:name|full_name|first_name)"\s*:\s*"([^"]+)"/);
-          if (m) return { email: m[1], name: n ? n[1] : null };
-        }
-      }
-    } catch (e) {/* */}
-    return { email: null, name: null };
-  }
-  function findFindTicketsBtn() {
-    const all = document.querySelectorAll("a, button, [role='button']");
-    for (const el of all) {
-      const t = (el.textContent || "").trim().toLowerCase();
-      if (t === "find tickets" || t.includes("find tickets")) return el;
-    }
-    return null;
-  }
-  function readQueueToken() {
-    try {
-      const raw = localStorage.getItem("persist:nextjs-sitecore-root");
-      if (!raw) return null;
-      const root = JSON.parse(raw);
-      if (!root.event) return null;
-      const ev = typeof root.event === "string" ? JSON.parse(root.event) : root.event;
-      return ev.queueToken || null;
-    } catch (e) { return null; }
-  }
-  async function waitFor(predicate, { timeout = 8000, interval = 100 } = {}) {
+
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  async function waitFor(predicate, { timeout = 12000, interval = 80 } = {}) {
     const t0 = Date.now();
     while (Date.now() - t0 < timeout) {
       const v = predicate();
@@ -170,150 +137,161 @@ async function runBuyFlow(order) {
     }
     return null;
   }
-
-  // ── 0. Auth detection via REAL signals, not cookie sniffing ────────────
-  // The old `hasTokenCookie()` check was unreliable because ahlan.sa sets
-  // its token as HttpOnly (invisible to JS). Sometimes it leaked, sometimes
-  // it didn't — explaining "auth_error" for users who were clearly logged in.
-  //
-  // New approach: only treat auth as broken if (a) we're sitting on /Signin
-  // right now, or (b) the actual API calls below return 401, or (c) the
-  // page bounces to /Signin mid-flow. Otherwise, assume logged in and try.
-  if (location.pathname.toLowerCase().includes("/signin") ||
-      location.pathname.toLowerCase().includes("/login")) {
-    report("auth_error", {
-      error_msg: "Bounced to /Signin — not logged in to ahlan.sa",
-      notes: "Open https://www.ahlan.sa once in this browser, sign in, then re-queue.",
-    });
-    return;
-  }
-  // Watch for mid-flow auth redirect
-  let _authBounced = false;
-  const _origPush = history.pushState.bind(history);
-  history.pushState = function (...args) {
-    const url = String(args[2] || "").toLowerCase();
-    if (url.includes("/signin") || url.includes("/login")) _authBounced = true;
-    return _origPush(...args);
+  const findBtnByText = (text) => {
+    text = text.toLowerCase().trim();
+    const all = document.querySelectorAll("button, a, [role='button']");
+    for (const el of all) {
+      const t = (el.textContent || "").toLowerCase().trim();
+      if (t === text || t.includes(text)) return el;
+    }
+    return null;
   };
+  const onSignIn = () => /\/(signin|login)/i.test(location.pathname);
+  const readQueueToken = () => {
+    try {
+      const raw = localStorage.getItem("persist:nextjs-sitecore-root");
+      if (!raw) return null;
+      const root = JSON.parse(raw);
+      if (!root.event) return null;
+      const ev = typeof root.event === "string" ? JSON.parse(root.event) : root.event;
+      return ev.queueToken || null;
+    } catch (e) { return null; }
+  };
+  function detectAccount() {
+    const tok = document.cookie.split("; ").find(c => c.startsWith("token="));
+    if (tok) {
+      const v = tok.slice("token=".length);
+      if (v.split(".").length >= 2) {
+        try {
+          const p = JSON.parse(atob(v.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+          if (p.email && p.email.includes("@")) return { email: p.email, name: p.name || p.full_name || null };
+        } catch {}
+      }
+    }
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i); if (!k) continue;
+        const v = localStorage.getItem(k);
+        if (v && /"email"\s*:\s*"[^"]+@[^"]+"/.test(v)) {
+          const m = v.match(/"email"\s*:\s*"([^"]+@[^"]+)"/);
+          const n = v.match(/"(?:name|full_name|first_name)"\s*:\s*"([^"]+)"/);
+          if (m) return { email: m[1], name: n ? n[1] : null };
+        }
+      }
+    } catch {}
+    return { email: null, name: null };
+  }
 
-  // ── PARALLEL: kick off eventDetail fetch RIGHT NOW (doesn't need queue-token) ──
-  const eventDetailPromise = fetch(
-    `/api/ticketing/eventDetail?slug=${encodeURIComponent(order.slug)}&language=en`,
-    { credentials: "include", headers: { Accept: "application/json" } }
-  ).then(async r => {
-    if (r.status === 401 || r.status === 403) return { _error: `HTTP ${r.status}`, _auth: true };
-    if (!r.ok) return { _error: `HTTP ${r.status}` };
-    return r.json();
-  }).catch(e => ({ _error: e.message }));
-
-  // ── 1. Click Find Tickets the moment it appears ─────────────────────
-  let findBtn = await waitFor(findFindTicketsBtn, { timeout: 8000, interval: 50 });
-  if (!findBtn) {
-    report("failed", {
-      error_msg: "Find Tickets button not found on page",
-      notes: `URL: ${location.href}`,
-    });
+  // ── Sign-in interstitial ─────────────────────────────────────────────
+  if (onSignIn()) {
+    hudStatus("You're signed out. Sign in below and we'll continue automatically.", "warn");
+    hudStep("Detected /Signin redirect", "err");
+    hudAction(`<div style="color:#fde047;font-size:11px;">After login, this tab will auto-resume order #${order.id}.</div>`);
+    report("auth_error", { error_msg: "Not logged in to ahlan.sa", notes: "User is sitting on /Signin" });
+    // Watch for navigation away from /Signin → re-fire the flow
+    const iv = setInterval(() => {
+      if (!onSignIn()) {
+        clearInterval(iv);
+        location.reload(); // we stashed the order in sessionStorage, content.js will pick it up
+      }
+    }, 1000);
     return;
   }
-  const tFindClick = Date.now();
-  findBtn.click();
-  sendTiming({ tFindClick });
 
-  // ── 2. Wait for queue-token (poll every 40ms — usually appears in <300ms) ──
-  // If Find Tickets click bounced us to /Signin or we see no token, treat as auth
+  // ── 1. Click Find Tickets ────────────────────────────────────────────
+  hudStep("Find Tickets", "busy");
+  const findBtn = await waitFor(() => findBtnByText("Find Tickets"), { timeout: 10000 });
+  if (!findBtn) {
+    hudUpdateLast("err");
+    hudStatus("Couldn't find the Find Tickets button. The match page didn't render normally.", "err");
+    report("failed", { error_msg: "Find Tickets button not found", notes: `URL ${location.pathname}` });
+    return;
+  }
+  findBtn.click();
+  hudUpdateLast("ok");
+
+  // ── 2. Wait for queue-token ──────────────────────────────────────────
+  hudStep("Get queue-token from ahlan.sa", "busy");
   const queueToken = await waitFor(() => {
-    if (_authBounced || location.pathname.toLowerCase().includes("/signin")) return "__AUTH_BOUNCE__";
+    if (onSignIn()) return "__AUTH__";
     return readQueueToken();
-  }, { timeout: 10000, interval: 40 });
-  const tQueueToken = Date.now();
-  sendTiming({ tQueueToken });
-  if (queueToken === "__AUTH_BOUNCE__") {
-    report("auth_error", {
-      error_msg: "Find Tickets click bounced to sign-in",
-      notes: "Session expired or not logged in — sign in to ahlan.sa and re-queue.",
-    });
+  }, { timeout: 12000, interval: 50 });
+
+  if (queueToken === "__AUTH__") {
+    hudUpdateLast("err");
+    hudStatus("Bounced to sign-in. Log in, then this tab will resume the order.", "warn");
+    report("auth_error", { error_msg: "Find Tickets click bounced to /Signin" });
+    const iv = setInterval(() => {
+      if (!onSignIn()) { clearInterval(iv); location.reload(); }
+    }, 1000);
     return;
   }
   if (!queueToken) {
-    // Could be slow page OR could be unauthenticated. Check URL.
-    if (location.pathname.toLowerCase().includes("/signin")) {
-      report("auth_error", { error_msg: "Bounced to sign-in after Find Tickets click" });
+    hudUpdateLast("err");
+    hudStatus("Queue token never arrived (12s). ahlan.sa might be slow or your session is iffy.", "err");
+    hudAction(`<div style="color:#fde047;font-size:11px;">Try refreshing this tab manually. If still broken, sign out of ahlan.sa and sign back in.</div>`);
+    report("failed", { error_msg: "queue-token timeout (12s)" });
+    return;
+  }
+  hudUpdateLast("ok");
+
+  // ── 3. Fetch eventDetail ─────────────────────────────────────────────
+  hudStep("Fetch event details", "busy");
+  let eventDetail;
+  try {
+    const r = await fetch(
+      `/api/ticketing/eventDetail?slug=${encodeURIComponent(order.slug)}&language=en`,
+      { credentials: "include", headers: { Accept: "application/json" } }
+    );
+    if (r.status === 401 || r.status === 403) {
+      hudUpdateLast("err");
+      hudStatus(`Authentication error (HTTP ${r.status}). Sign in to ahlan.sa, then we'll retry.`, "err");
+      report("auth_error", { error_msg: `eventDetail HTTP ${r.status}` });
       return;
     }
-    report("failed", {
-      error_msg: "queue-token never appeared (10s timeout)",
-      notes: "Find Tickets clicked but the SPA didn't generate a queue-token. Try refreshing ahlan.sa to verify you're really logged in.",
-    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    eventDetail = await r.json();
+  } catch (e) {
+    hudUpdateLast("err");
+    hudStatus(`Failed to fetch event details: ${e.message}`, "err");
+    report("failed", { error_msg: e.message });
     return;
   }
-  console.log("[Ahlan Ext] queue-token:", queueToken.slice(0, 16) + "…",
-              `(took ${tQueueToken - tFindClick}ms)`);
+  hudUpdateLast("ok");
 
-  // ── 3. Await the parallel eventDetail (likely already resolved) ─────
-  const eventDetail = await eventDetailPromise;
-  const tEventDetail = Date.now();
-  sendTiming({ tEventDetail });
-  if (eventDetail._error) {
-    if (eventDetail._auth) {
-      report("auth_error", { error_msg: `eventDetail ${eventDetail._error} — not authenticated` });
-    } else {
-      report("failed", { error_msg: `eventDetail fetch failed: ${eventDetail._error}` });
-    }
-    return;
-  }
-
-  // Pick the right ticket — STRICT match to what the user clicked. We do
-  // NOT silently fall back to a different category, because that's how
-  // people end up with Premium when they wanted CAT 2.
+  // ── 4. Pick ticket (strict match — never silently swap category) ────
   const tickets = eventDetail.event_tickets || [];
-  const wanted = (order.category || "").trim().toLowerCase();
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const wanted = (order.category || "").trim();
   let pick = null;
-
   if (wanted) {
-    // Whitespace-tolerant exact match (case-insensitive)
-    const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
     pick = tickets.find(t => norm(t.title) === norm(wanted));
     if (!pick) {
-      // List what we actually saw so the user can tell us if ahlan changed naming
       const seen = tickets.map(t => `"${(t.title || "").trim()}"`).join(", ");
-      report("failed", {
-        error_msg: `Category "${order.category}" not found in event tickets`,
-        notes: `ahlan returned: ${seen || "(none)"}. NOT auto-picking a different one — re-queue with the exact category name.`,
-      });
+      hudStatus(`Category "${wanted}" not found. ahlan returned: ${seen}`, "err");
+      report("failed", { error_msg: `category "${wanted}" not found`, notes: seen });
       return;
     }
     if ((Number(pick.remaining) || 0) === 0) {
-      report("sold_out", {
-        error_msg: `${order.category} just sold out`,
-        notes: `Try a different category. (We deliberately don't auto-switch — that's how people get surprised by Premium charges.)`,
-      });
+      hudStatus(`${wanted} just sold out.`, "err");
+      report("sold_out", { error_msg: `${wanted} sold out at API time` });
       return;
     }
   } else {
-    // No category specified — only then do we apply priority
-    const PRIORITY = ["Premium", "CAT 1", "CAT 2"];
-    for (const name of PRIORITY) {
-      const c = tickets.find(t => (t.title || "").trim() === name);
+    const PRI = ["Premium", "CAT 1", "CAT 2"];
+    for (const n of PRI) {
+      const c = tickets.find(t => (t.title || "").trim() === n);
       if (c && (Number(c.remaining) || 0) > 0) { pick = c; break; }
     }
-    if (!pick) {
-      report("sold_out", { error_msg: "No public categories available",
-                           notes: "All Premium/CAT 1/CAT 2 sold out (no category was specified)." });
-      return;
-    }
+    if (!pick) { report("sold_out", { error_msg: "all public sold out" }); return; }
   }
+  const cat = (pick.title || "").trim();
+  const maxPo = Math.max(1, Number(pick.max_per_order) || 1);
+  const qty = Math.min(Math.max(1, Number(order.qty) || 1), maxPo, Number(pick.remaining) || 1);
+  hudStep(`Picked: ${cat} × ${qty}`, "ok");
 
-  const ticketId = pick._id;
-  const catName = (pick.title || "").trim();
-  const maxPerOrder = Math.max(1, Number(pick.max_per_order) || 1);
-  const remaining = Math.max(0, Number(pick.remaining) || 0);
-  const requestedQty = Math.max(1, Number(order.qty) || 1);
-  const qty = Math.min(requestedQty, maxPerOrder, remaining);
-
-  const teamId = (eventDetail.home_team || {})._id;
-  console.log("[Ahlan Ext] picked:", catName, "qty:", qty, "ticketId:", ticketId);
-
-  // ── 4. POST nonSeatedCheckout ────────────────────────────────────────
+  // ── 5. POST checkout ─────────────────────────────────────────────────
+  hudStep("Submit checkout (ahlan API)", "busy");
   const payload = {
     event_id: order.slug,
     redirect: `${location.origin}/payment-success?payData=`,
@@ -321,14 +299,12 @@ async function runBuyFlow(order) {
     lang: "en",
     payment_method: "credit_card",
     promo_code: "",
-    favorite_team: teamId,
+    favorite_team: (eventDetail.home_team || {})._id,
     booking_source: "afc-web",
     app_source: "afc",
-    tickets: [{ id: ticketId, qty }],
+    tickets: [{ id: pick._id, qty }],
   };
-
-  let coResp;
-  const tCheckoutStart = Date.now();
+  let coBody;
   try {
     const r = await fetch("/api/ticketing/nonSeatedCheckout", {
       method: "POST",
@@ -342,61 +318,48 @@ async function runBuyFlow(order) {
     });
     const ct = r.headers.get("content-type") || "";
     const body = ct.includes("json") ? await r.json() : await r.text();
-    if (!r.ok) {
-      const bodyStr = typeof body === "string" ? body : JSON.stringify(body);
-      if (r.status === 401 || r.status === 403) {
-        report("auth_error", {
-          error_msg: `checkout HTTP ${r.status} — session expired`,
-          notes: "Re-login to ahlan.sa and re-queue.",
-        });
-      } else {
-        report("failed", { error_msg: `checkout HTTP ${r.status}`, notes: bodyStr.slice(0, 200) });
-      }
+    if (r.status === 401 || r.status === 403) {
+      hudUpdateLast("err");
+      hudStatus("Checkout API says you're not authenticated. Sign in and re-queue.", "err");
+      report("auth_error", { error_msg: `checkout HTTP ${r.status}` });
       return;
     }
-    coResp = body;
+    if (!r.ok) {
+      const s = typeof body === "string" ? body : JSON.stringify(body);
+      hudUpdateLast("err");
+      hudStatus(`Checkout failed HTTP ${r.status}: ${s.slice(0, 120)}`, "err");
+      report("failed", { error_msg: `HTTP ${r.status}`, notes: s.slice(0, 200) });
+      return;
+    }
+    coBody = body;
   } catch (e) {
-    report("failed", { error_msg: `checkout fetch failed: ${e.message}` });
+    hudUpdateLast("err");
+    hudStatus(`Checkout error: ${e.message}`, "err");
+    report("failed", { error_msg: e.message });
     return;
   }
-  const tCheckoutDone = Date.now();
-  sendTiming({ tCheckoutStart, tCheckoutDone });
-  console.log("[Ahlan Ext] checkout took", tCheckoutDone - tCheckoutStart, "ms");
+  hudUpdateLast("ok");
 
-  // ── 5. Extract payment URL + redirect ────────────────────────────────
-  const data = coResp.data || coResp;
-  const paymentUrl =
-    data.redirect_url ||
-    (data.response && data.response.redirect_url) ||
-    null;
-  const orderId =
-    data.order_id ||
-    (data.response && data.response.order_id) ||
-    null;
-
+  // ── 6. Redirect to PayTabs ───────────────────────────────────────────
+  const data = coBody.data || coBody;
+  const paymentUrl = data.redirect_url || (data.response && data.response.redirect_url);
+  const orderId = data.order_id || (data.response && data.response.order_id);
   if (!paymentUrl) {
-    report("failed", {
-      error_msg: "no payment URL in checkout response",
-      notes: JSON.stringify(coResp).slice(0, 200),
-    });
+    hudStatus("Checkout succeeded but no payment URL came back. Strange.", "err");
+    report("failed", { error_msg: "no payment URL in response", notes: JSON.stringify(coBody).slice(0, 200) });
     return;
   }
-
-  const tPayUrl = Date.now();
-  sendTiming({ tPayUrl });
-  console.log("[Ahlan Ext] payment URL:", paymentUrl,
-              `(total: ${tPayUrl - tContentStart}ms in content.js)`);
-  // Detect the logged-in account email so the order is forever tied to it
+  hudStep("Redirecting to PayTabs payment page", "ok");
   const acc = detectAccount();
-  console.log("[Ahlan Ext] account detected:", acc);
   report("success", {
-    notes: `Cart created · ${catName} × ${qty}${orderId ? ` · order ${String(orderId).slice(-8)}` : ""} · ${tPayUrl - tContentStart}ms in-tab`,
+    notes: `Cart created · ${cat} × ${qty}${orderId ? ` · order ${String(orderId).slice(-8)}` : ""}`,
     account_email: acc.email,
     account_name: acc.name,
   });
-  // Ask the background worker to bring this tab to the front — it's now ready for human.
-  try { chrome.runtime.sendMessage({ type: "focus_tab" }); } catch {/* */}
-  document.title = `🟢 PAY NOW · ${catName} ×${qty}`;
-  // Redirect immediately — no artificial sleep
-  window.location.href = paymentUrl;
+  hudStatus(`✓ Cart ready as ${acc.email || "(unknown email)"} — redirecting to pay…`, "ok");
+  // Clear the cached order (we're navigating away)
+  try { sessionStorage.removeItem("__ahlan_pending_order"); } catch {}
+  document.title = `🟢 PAY NOW · ${cat} ×${qty}`;
+  try { chrome.runtime.sendMessage({ type: "focus_tab" }); } catch {}
+  setTimeout(() => { location.href = paymentUrl; }, 600);
 }
