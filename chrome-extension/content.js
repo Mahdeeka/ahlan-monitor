@@ -77,6 +77,87 @@ console.log("[ahlan-ext] content.js loaded at", location.href, "readyState:", do
 })();
 
 // ────────────────────────────────────────────────────────────────────────
+// Auto-login with stored credentials
+// ────────────────────────────────────────────────────────────────────────
+async function tryAutoLogin(order, hudStatus, hudStep, hudAction) {
+  // Read settings + accounts
+  const s = await new Promise(r => chrome.storage.local.get(["autoLogin", "ahlan_accounts"], r));
+  if (s.autoLogin === false) return "disabled";
+  const list = s.ahlan_accounts || [];
+  const hasAny = list.some(a => a.email && a.password);
+  if (!hasAny) return "no_creds";
+  const available = list.filter(a => a.email && a.password && !a.used_at && !a.failed_at);
+  if (available.length === 0) return "all_used";
+
+  hudStatus(`Auto-login: trying ${available.length} stored account(s)…`, "busy");
+
+  for (const acc of available) {
+    hudStep(`Logging in as ${acc.email}`, "busy");
+    try {
+      const r = await fetch("/api/auth/login", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ email: acc.email, password: acc.password, language: "en" }),
+      });
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        hudUpdateLast("err");
+        // Mark as failed so we don't retry this account
+        await markAccountFailed(acc.email, `HTTP ${r.status}: ${body.slice(0, 80)}`);
+        continue;
+      }
+      const data = await r.json();
+      const token = data.access_token || data?.data?.access_token;
+      const refresh = data.refresh_token || data?.data?.refresh_token;
+      if (!token) {
+        hudUpdateLast("err");
+        await markAccountFailed(acc.email, "no access_token in response");
+        continue;
+      }
+      // Set cookies via JS so the next request is authenticated
+      document.cookie = `token=${token}; path=/; secure; SameSite=Lax; max-age=86400`;
+      if (refresh) document.cookie = `refresh-token=${refresh}; path=/; secure; SameSite=Lax; max-age=2592000`;
+      // Remember which account we used for this order — so we can mark it used on success
+      try { sessionStorage.setItem("__ahlan_active_account", JSON.stringify({ email: acc.email })); } catch {}
+      hudUpdateLast("ok");
+      hudStatus(`✓ Logged in as ${acc.email} — loading match page…`, "ok");
+      // Navigate to the event page
+      setTimeout(() => {
+        location.replace(`https://www.ahlan.sa/events/details?event=${encodeURIComponent(order.slug)}`);
+      }, 200);
+      return "navigated";
+    } catch (e) {
+      hudUpdateLast("err");
+      await markAccountFailed(acc.email, String(e).slice(0, 80));
+      continue;
+    }
+  }
+  return "failed";
+}
+
+async function markAccountFailed(email, reason) {
+  const { ahlan_accounts: list = [] } = await new Promise(r => chrome.storage.local.get("ahlan_accounts", r));
+  const acc = list.find(a => a.email && a.email.toLowerCase() === email.toLowerCase());
+  if (acc) {
+    acc.failed_at = Date.now();
+    acc.failed_reason = reason;
+    await new Promise(r => chrome.storage.local.set({ ahlan_accounts: list }, r));
+  }
+}
+
+async function markAccountUsed(email, orderId) {
+  if (!email) return;
+  const { ahlan_accounts: list = [] } = await new Promise(r => chrome.storage.local.get("ahlan_accounts", r));
+  const acc = list.find(a => a.email && a.email.toLowerCase() === email.toLowerCase());
+  if (acc) {
+    acc.used_at = Date.now();
+    acc.used_for = [...(acc.used_for || []), orderId].slice(-10);
+    await new Promise(r => chrome.storage.local.set({ ahlan_accounts: list }, r));
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // Status HUD overlay — visible feedback for every step
 // ────────────────────────────────────────────────────────────────────────
 function ensureHud() {
@@ -221,17 +302,28 @@ async function runFlow(order) {
 
   // ── Sign-in interstitial ─────────────────────────────────────────────
   if (onSignIn()) {
+    // Try auto-login with stored credentials first
+    const auto = await tryAutoLogin(order, hudStatus, hudStep, hudAction);
+    if (auto === "navigated") return; // auto-login succeeded, page is redirecting
+    // Fallthrough: no creds or auto-login failed → manual sign-in flow
     hudStatus(`⚠️  Sign in below to buy ${order.title || order.slug}`, "warn");
     hudStep(`Order #${order.id}: ${order.category} × ${order.qty}`, "wait");
     hudStep("Waiting for you to log in", "busy");
     hudAction(`
       <div style="background:rgba(252,211,77,0.12);border:1px solid rgba(252,211,77,0.4);border-radius:6px;padding:8px 10px;color:#fde047;font-size:11px;line-height:1.5;">
         <strong>👇 Sign in to ahlan.sa below.</strong><br>
-        As soon as you're logged in, this tab will jump back to the match page and finish your order automatically.<br>
+        ${auto === "no_creds"
+          ? `Add stored accounts in the extension <a style="color:#fbbf24;text-decoration:underline;" onclick="chrome.runtime.openOptionsPage&&chrome.runtime.openOptionsPage()">settings</a> to auto-login next time.`
+          : auto === "all_used"
+          ? `All 10 stored accounts are used. Reset usage in settings or add new ones.`
+          : auto === "failed"
+          ? `Auto-login failed for all stored accounts. Check passwords in settings.`
+          : ``}
+        <br>After sign-in this tab will jump back and finish your order automatically.<br>
         <em style="color:#94a3b8;">Don't close this tab.</em>
       </div>
     `);
-    report("auth_error", { error_msg: "Not logged in to ahlan.sa", notes: "User on /Signin — HUD shown, watching for login" });
+    report("auth_error", { error_msg: "Not logged in to ahlan.sa", notes: `User on /Signin (auto-login: ${auto})` });
 
     // Watch for URL change away from /signin (covers SPA nav + hard nav)
     let lastUrl = location.href;
@@ -240,8 +332,6 @@ async function runFlow(order) {
         lastUrl = location.href;
         if (!onSignIn()) {
           clearInterval(iv);
-          console.log("[ahlan-ext] sign-in finished, jumping back to event page for order", order.id);
-          // Force navigation to the event page — don't rely on ahlan's url_redirect
           location.replace(`https://www.ahlan.sa/events/details?event=${encodeURIComponent(order.slug)}`);
         }
       }
@@ -415,15 +505,30 @@ async function runFlow(order) {
     return;
   }
   hudStep("Redirecting to PayTabs payment page", "ok");
-  const acc = detectAccount();
+  // Determine which email we used. Prefer the one we auto-logged-in with.
+  let accEmail = null, accName = null;
+  try {
+    const active = JSON.parse(sessionStorage.getItem("__ahlan_active_account") || "null");
+    if (active?.email) { accEmail = active.email; accName = active.name || null; }
+  } catch {}
+  if (!accEmail) {
+    const acc = detectAccount();
+    accEmail = acc.email; accName = acc.name;
+  }
+  // Mark the stored account as used (so we rotate to the next one next time)
+  await markAccountUsed(accEmail, order.id);
+
   report("success", {
     notes: `Cart created · ${cat} × ${qty}${orderId ? ` · order ${String(orderId).slice(-8)}` : ""}`,
-    account_email: acc.email,
-    account_name: acc.name,
+    account_email: accEmail,
+    account_name: accName,
   });
-  hudStatus(`✓ Cart ready as ${acc.email || "(unknown email)"} — redirecting to pay…`, "ok");
+  hudStatus(`✓ Cart ready as ${accEmail || "(unknown email)"} — redirecting to pay…`, "ok");
   // Clear the cached order (we're navigating away)
-  try { sessionStorage.removeItem("__ahlan_pending_order"); } catch {}
+  try {
+    sessionStorage.removeItem("__ahlan_pending_order");
+    sessionStorage.removeItem("__ahlan_active_account");
+  } catch {}
   document.title = `🟢 PAY NOW · ${cat} ×${qty}`;
   try { chrome.runtime.sendMessage({ type: "focus_tab" }); } catch {}
   setTimeout(() => { location.href = paymentUrl; }, 600);

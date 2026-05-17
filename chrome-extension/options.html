@@ -5,43 +5,85 @@
   <style>
     body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
            background: #0a0c1a; color: #e2e8f0;
-           margin: 0; padding: 20px; width: 460px; font-size: 13px; }
+           margin: 0; padding: 20px; width: 560px; font-size: 13px; }
     h1 { font-size: 16px; margin: 0 0 12px; color: #a5b4fc; }
+    h2 { font-size: 13px; margin: 18px 0 8px; color: #c4b5fd; text-transform: uppercase; letter-spacing: 0.5px; }
     label { display: block; margin-top: 12px; color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
-    input { width: 100%; box-sizing: border-box; padding: 8px 10px; background: #1e293b;
-            border: 1px solid #334155; color: #f1f5f9; border-radius: 6px; font-size: 13px;
-            margin-top: 4px; }
-    input:focus { outline: none; border-color: #6366f1; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 7px 9px; background: #1e293b;
+            border: 1px solid #334155; color: #f1f5f9; border-radius: 6px; font-size: 12px;
+            margin-top: 4px; font-family: inherit; }
+    input:focus, textarea:focus { outline: none; border-color: #6366f1; }
     .row { display: flex; align-items: center; gap: 6px; margin-top: 12px; }
-    button { padding: 9px 16px; background: #4338ca; color: #fff; border: 0;
+    button.primary { padding: 9px 16px; background: #4338ca; color: #fff; border: 0;
              border-radius: 6px; cursor: pointer; font-size: 13px; margin-top: 16px; }
-    button:hover { background: #6366f1; }
+    button.primary:hover { background: #6366f1; }
+    button.small { padding: 4px 8px; background: #1e293b; color: #cbd5e1; border: 1px solid #334155;
+                   border-radius: 4px; cursor: pointer; font-size: 11px; }
+    button.small:hover { background: #334155; color: #fff; }
+    button.danger { background: #7f1d1d; color: #fecaca; border-color: #b91c1c; }
+    button.danger:hover { background: #b91c1c; color: #fff; }
     .ok { color: #6ee7b7; margin-top: 10px; font-size: 11px; }
     .hint { color: #64748b; font-size: 11px; margin-top: 4px; line-height: 1.5; }
+    .creds-table { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 12px; }
+    .creds-table th { text-align: left; color: #64748b; font-size: 10px; text-transform: uppercase;
+                      padding: 4px 6px; border-bottom: 1px solid #334155; }
+    .creds-table td { padding: 4px; border-bottom: 1px solid rgba(51, 65, 85, 0.5); }
+    .creds-table input { margin: 0; padding: 5px 7px; font-size: 11px; background: #0f172a; }
+    .status-badge { padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: bold; text-transform: uppercase; }
+    .status-avail { background: rgba(110, 231, 183, 0.15); color: #6ee7b7; border: 1px solid rgba(110, 231, 183, 0.3); }
+    .status-used  { background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3); }
+    .status-fail  { background: rgba(252, 165, 165, 0.15); color: #fca5a5; border: 1px solid rgba(252, 165, 165, 0.3); }
+    .stats { background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3);
+             border-radius: 6px; padding: 8px 10px; margin: 8px 0; font-size: 11px; color: #c7d2fe; }
   </style>
 </head><body>
   <h1>Ahlan Auto-Buy — Settings</h1>
+
+  <h2>Connection</h2>
 
   <label>Dashboard URL</label>
   <input id="dashboardUrl" placeholder="https://ahlanweb.vercel.app">
 
   <label>Worker token (BUY_WORKER_TOKEN)</label>
   <input id="workerToken" type="password" placeholder="paste your token here">
-  <div class="hint">
-    This is the same token stored as <code>BUY_WORKER_TOKEN</code> on Vercel.
-    Without it the extension can't poll the queue.
-  </div>
 
-  <label>Worker ID (label shown in dashboard)</label>
+  <label>Worker ID</label>
   <input id="workerId" placeholder="chrome-ext">
 
   <div class="row">
     <input type="checkbox" id="enabled" style="width:16px;">
-    <span>Enabled — automatically claim and open queued orders</span>
+    <span>Enabled — listen for dashboard orders</span>
   </div>
 
-  <button id="save">Save</button>
+  <h2>Ahlan accounts (up to 10)</h2>
+  <div class="hint">
+    Stored ONLY in this browser extension (chrome.storage.local). Never sent to the dashboard or any server other than ahlan.sa for login. When you click Buy in the dashboard, the extension auto-logs-in with the first available account and runs the purchase.
+  </div>
+
+  <div class="stats" id="stats">Loading…</div>
+
+  <div class="row" style="margin-top: 8px;">
+    <input type="checkbox" id="autoLogin" style="width:16px;">
+    <span>Auto-login with stored accounts (uncheck to fall back to manual sign-in)</span>
+  </div>
+
+  <table class="creds-table">
+    <thead><tr><th>#</th><th>Email</th><th>Password</th><th>Status</th><th></th></tr></thead>
+    <tbody id="credsBody"></tbody>
+  </table>
+
+  <div class="row" style="margin-top: 8px;">
+    <button class="small" id="addRow">+ Add row</button>
+    <button class="small" id="bulkPaste">Bulk paste (email:password lines)</button>
+    <button class="small danger" id="resetUsage">Reset usage (mark all available)</button>
+    <button class="small danger" id="clearAll">Clear all accounts</button>
+  </div>
+
+  <button class="primary" id="save">Save settings</button>
   <span id="msg" class="ok"></span>
+
+  <textarea id="bulkArea" style="display:none; margin-top:10px; height:140px; font-family: monospace;"
+            placeholder="paste lines of email:password, one per row…"></textarea>
 </body>
 <script src="options.js"></script>
 </html>
