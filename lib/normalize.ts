@@ -56,15 +56,27 @@ export function normalizeEvent(slug: string, data: any): Event {
   }
 
   const tickets = (data?.event_tickets || []) as any[];
+  // EVENT-LEVEL sold_out flag (set by ahlan when the whole event is closed —
+  // e.g. knockout placeholders like "W37 v W39" where teams aren't known yet,
+  // or matches where ticketing has been pulled). When this is true, NONE of
+  // the per-category remainders are actually buyable, even if the cat-level
+  // sold_out flag says false. Always wins over per-category.
+  const eventSoldOut = !!data?.is_soldout;
   const cats = tickets.map(t => {
     const remaining = safeInt(t.remaining);
     const quantity = safeInt(t.quantity);
     const name = ((t.title as string) || "").trim();
     // Trust ahlan's sold_out flag — they often return remaining>0 while
-    // flagging the category sold_out (drip-restock placeholder).
+    // flagging the category sold_out (drip-restock placeholder). The
+    // event-level is_soldout flag forces EVERY public category sold-out
+    // (hospitality packs can sometimes stay live independently, so we don't
+    // force those — but the UI treats the event as sold out anyway).
     const apiSoldOut = !!t.sold_out;
-    const isSoldOut = apiSoldOut || (remaining === 0 && quantity > 0);
-    const effectiveRemaining = apiSoldOut ? 0 : remaining;
+    const hosp = isHospitality(name);
+    const isSoldOut = apiSoldOut || (remaining === 0 && quantity > 0) || (eventSoldOut && !hosp);
+    // Drop the effective remaining for both: explicit cat-level sold_out
+    // (drip-restock buffer) AND event-level sold_out (whole event closed).
+    const effectiveRemaining = (apiSoldOut || (eventSoldOut && !hosp)) ? 0 : remaining;
     return {
       name,
       remaining: effectiveRemaining,
@@ -72,7 +84,7 @@ export function normalizeEvent(slug: string, data: any): Event {
       price: safeInt(t.price),
       max_per_order: safeInt(t.max_per_order),
       sold_out: isSoldOut,
-      is_hospitality: isHospitality(name),
+      is_hospitality: hosp,
     };
   });
 
@@ -101,6 +113,10 @@ export function normalizeEvent(slug: string, data: any): Event {
 
   let urgency: Urgency = "available";
   if (publicCount === 0 && total_capacity === 0) urgency = "unknown";
+  // Event-level sold_out wins: if ahlan flagged the whole event sold-out
+  // (e.g. knockout placeholder "W37 v W39"), it's sold out regardless of
+  // what the per-category remaining numbers say.
+  else if (eventSoldOut) urgency = "sold_out";
   else if (publicCount > 0 && publicSoldOut === publicCount) urgency = "sold_out";
   else if (total_capacity > 0 && total_remaining === 0) urgency = "sold_out";
   else if (pct_sold >= 90) urgency = "almost_gone";

@@ -256,17 +256,25 @@ def normalize(slug: str, data: dict) -> dict:
     # SAR value sitting open in MATCH packages right now. Surfaces high-value
     # events (KSA matches, packs, FINAL) on the dashboard.
     hosp_value_sar = 0
+    # EVENT-LEVEL is_soldout from ahlan. Set on knockout placeholders ("W37 v
+    # W39") where teams aren't known yet, and on matches where ticketing has
+    # been pulled. When true, NO public category is actually buyable even if
+    # the cat-level sold_out flag says false. We trust this flag absolutely.
+    event_sold_out = bool(data.get("is_soldout"))
     for t in tickets:
         name = (t.get("title") or "").strip()
         rem = safe_int(t.get("remaining")); qty = safe_int(t.get("quantity"))
         # Trust ahlan's sold_out flag — they sometimes return remaining>0 while
         # marking the category sold_out (drip restock between releases). If
-        # the API doesn't include it, fall back to remaining==0.
+        # the API doesn't include it, fall back to remaining==0. Also force
+        # sold_out for public cats when event-level is_soldout is true.
         api_sold_out = bool(t.get("sold_out"))
-        sold_out = api_sold_out or (rem == 0 and qty > 0)
-        # If the API says sold out, treat remaining as 0 for total counting —
-        # those "remaining" tickets aren't actually buyable.
-        effective_rem = 0 if api_sold_out else rem
+        hosp = is_hospitality(name)
+        sold_out = api_sold_out or (rem == 0 and qty > 0) or (event_sold_out and not hosp)
+        # Drop effective remaining for both cat-level and event-level sold-out.
+        # Hospitality packs can stay live independently (they have their own
+        # private channel), so we don't force-zero those.
+        effective_rem = 0 if (api_sold_out or (event_sold_out and not hosp)) else rem
         cats.append({
             "name": name,
             "remaining": effective_rem,
@@ -274,9 +282,9 @@ def normalize(slug: str, data: dict) -> dict:
             "price": safe_int(t.get("price")),
             "max_per_order": safe_int(t.get("max_per_order")),
             "sold_out": sold_out,
-            "is_hospitality": is_hospitality(name),
+            "is_hospitality": hosp,
         })
-        if not is_hospitality(name):
+        if not hosp:
             public_rem += effective_rem
             public_cap += qty
             public_count += 1
@@ -291,6 +299,11 @@ def normalize(slug: str, data: dict) -> dict:
     pct = ((public_cap - public_rem) / public_cap * 100) if public_cap else 0
     if public_count == 0 and public_cap == 0:
         urgency = "unknown"
+    elif event_sold_out:
+        # Event-level wins. The bug we kept hitting: ahlan flagged the whole
+        # match sold out (e.g. knockout placeholders) but per-category flags
+        # still said buyable. Now we treat it correctly as SOLD OUT.
+        urgency = "sold_out"
     elif public_count > 0 and public_sold_out_count == public_count:
         # All public categories sold out → SOLD OUT (regardless of hospitality)
         urgency = "sold_out"
