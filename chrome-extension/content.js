@@ -327,6 +327,115 @@ function hudAction(html) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// Direct webook backend helpers
+//
+// The hardcoded API token below is the same one shipped in webook.com's
+// browser bundle. It lets us:
+//   1. Skip the "Find Tickets" UI click — one fetch returns the event
+//      details AND a fresh queue-token in the response header (saves ~5-10s).
+//   2. Refresh JWT silently before each buy step (keep accounts alive for
+//      days instead of forcing re-login per attempt).
+//
+// All calls work CORS-wise because webook explicitly allows ahlan.sa as an
+// Origin. From the extension content script's same-origin context on
+// ahlan.sa, fetch() carries Origin: https://www.ahlan.sa automatically.
+// ────────────────────────────────────────────────────────────────────────
+const WEBOOK_API_BASE  = "https://afc-api.webook.com/api/v2";
+const WEBOOK_API_TOKEN = "e9aac1f2f0b6c07d6be070ed14829de684264278359148d6a582ca65a50934d2";
+
+/** Decode the queue-token JWT and return its payload (or null on failure).
+ *  Payload shape: { e: <expiry_unix>, n: <queue_position>, u: <reversed_UA> }. */
+function parseQueueToken(jwt) {
+  if (!jwt || typeof jwt !== "string") return null;
+  const parts = jwt.split(".");
+  if (parts.length < 2) return null;
+  try {
+    return JSON.parse(
+      atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")
+        .padEnd(parts[1].length + (4 - parts[1].length % 4) % 4, "="))
+    );
+  } catch { return null; }
+}
+
+/** Fetch event-detail + queue-token in ONE call, bypassing the UI.
+ *  Returns { eventDetail, queueToken, queuePosition } or null on failure. */
+async function tryDirectQueueToken(slug) {
+  try {
+    const r = await fetch(
+      `${WEBOOK_API_BASE}/event-detail/${encodeURIComponent(slug)}?lang=en&visible_in=afc`,
+      {
+        method: "GET",
+        credentials: "omit",  // no cookies — public endpoint, app token is enough
+        headers: {
+          "Accept": "application/json",
+          "token": WEBOOK_API_TOKEN,
+        },
+      }
+    );
+    if (!r.ok) return null;
+    // queue-token is exposed via access-control-expose-headers
+    const queueToken = r.headers.get("queue-token");
+    if (!queueToken) return null;
+    const body = await r.json();
+    if (body?.status !== "success" || !body?.data) return null;
+    const payload = parseQueueToken(queueToken);
+    return {
+      eventDetail: body.data,
+      queueToken,
+      queuePosition: payload?.n ?? null,
+      queueExpiry: payload?.e ?? null,
+    };
+  } catch { return null; }
+}
+
+/** If the access token is missing or about to expire, hit /api/auth/refreshtoken
+ *  to refresh it. Returns true if we have a valid token afterwards. */
+async function maybeRefreshAuth() {
+  // Read current token from cookies
+  function cookieGet(name) {
+    const m = (`; ${document.cookie}`).split(`; ${name}=`);
+    if (m.length === 2) return decodeURIComponent(m.pop().split(";").shift() || "");
+    return null;
+  }
+  const tok = cookieGet("token");
+  if (!tok) return false;
+  try {
+    const payload = JSON.parse(
+      atob(tok.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))
+    );
+    const secsLeft = (payload.exp || 0) - Math.floor(Date.now() / 1000);
+    if (secsLeft > 300) return true; // valid for > 5 min, no action needed
+  } catch { /* fall through to refresh */ }
+
+  console.log("[ahlan-ext] JWT expiring or unreadable, attempting refresh…");
+  try {
+    const r = await fetch("https://www.ahlan.sa/api/auth/refreshtoken", {
+      method: "POST",
+      credentials: "include",  // sends refresh-token cookie automatically
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!r.ok) {
+      console.warn(`[ahlan-ext] refresh failed: HTTP ${r.status}`);
+      return false;
+    }
+    const data = await r.json();
+    if (data.access_token) {
+      // Use the same SameSite/Secure semantics webook uses
+      document.cookie = `token=${encodeURIComponent(data.access_token)}; path=/; SameSite=Lax; Secure`;
+    }
+    if (data.refresh_token) {
+      document.cookie = `refresh-token=${encodeURIComponent(data.refresh_token)}; path=/; SameSite=Lax; Secure`;
+    }
+    console.log("[ahlan-ext] JWT refreshed successfully");
+    return true;
+  } catch (e) {
+    console.warn(`[ahlan-ext] refresh threw: ${e.message}`);
+    return false;
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // Buy flow
 // ────────────────────────────────────────────────────────────────────────
 async function runFlow(order) {
@@ -438,24 +547,55 @@ async function runFlow(order) {
     return;
   }
 
-  // ── 1. Click Find Tickets ────────────────────────────────────────────
-  hudStep("Find Tickets", "busy");
-  const findBtn = await waitFor(() => findBtnByText("Find Tickets"), { timeout: 10000 });
-  if (!findBtn) {
-    hudUpdateLast("err");
-    hudStatus("Couldn't find the Find Tickets button. The match page didn't render normally.", "err");
-    report("failed", { error_msg: "Find Tickets button not found", notes: `URL ${location.pathname}` });
-    return;
-  }
-  findBtn.click();
-  hudUpdateLast("ok");
+  // ── 0. Refresh JWT proactively (so /checkout below doesn't 401) ──────
+  // Silent — only re-prompts if refresh fails and we're not already logged in.
+  await maybeRefreshAuth();
 
-  // ── 2. Wait for queue-token ──────────────────────────────────────────
-  hudStep("Get queue-token from ahlan.sa", "busy");
-  const queueToken = await waitFor(() => {
-    if (onSignIn()) return "__AUTH__";
-    return readQueueToken();
-  }, { timeout: 12000, interval: 50 });
+  // ── 1+2 (FAST PATH). Direct API call to webook backend.
+  // One GET returns event details AND a fresh queue-token in the response
+  // header — saves ~5-10 seconds vs the legacy "click Find Tickets → poll
+  // localStorage" flow. Only the FAST PATH on its own runs when this works;
+  // if it fails for any reason (network, CORS, server hiccup), we fall
+  // through to the legacy UI flow below.
+  let queueToken = null;
+  let eventDetail = null;
+  let queuePosition = null;
+  hudStep("Get queue-token (direct API)", "busy");
+  try {
+    const direct = await tryDirectQueueToken(order.slug);
+    if (direct?.queueToken && direct?.eventDetail) {
+      queueToken = direct.queueToken;
+      eventDetail = direct.eventDetail;
+      queuePosition = direct.queuePosition;
+      hudUpdateLast("ok");
+      if (queuePosition != null) {
+        hudStatus(`Queue position #${queuePosition.toLocaleString()} · proceeding to checkout`, "busy");
+      }
+    }
+  } catch (e) {
+    console.warn("[ahlan-ext] direct API path failed:", e?.message);
+  }
+
+  if (!queueToken) {
+    // ── 1. Legacy: Click Find Tickets ─────────────────────────────────
+    hudUpdateLast("err");
+    hudStep("Find Tickets (UI fallback)", "busy");
+    const findBtn = await waitFor(() => findBtnByText("Find Tickets"), { timeout: 10000 });
+    if (!findBtn) {
+      hudUpdateLast("err");
+      hudStatus("Couldn't find the Find Tickets button. The match page didn't render normally.", "err");
+      report("failed", { error_msg: "Find Tickets button not found", notes: `URL ${location.pathname}` });
+      return;
+    }
+    findBtn.click();
+    hudUpdateLast("ok");
+
+    // ── 2. Wait for queue-token via SPA's localStorage write ──────────
+    hudStep("Get queue-token from ahlan.sa", "busy");
+    queueToken = await waitFor(() => {
+      if (onSignIn()) return "__AUTH__";
+      return readQueueToken();
+    }, { timeout: 12000, interval: 50 });
 
   if (queueToken === "__AUTH__") {
     hudUpdateLast("err");
@@ -497,31 +637,33 @@ async function runFlow(order) {
     report("failed", { error_msg: "queue-token timeout (12s)" });
     return;
   }
-  hudUpdateLast("ok");
+    hudUpdateLast("ok");
+  }  // end of fallback `if (!queueToken)` (the direct API path may have set it above)
 
-  // ── 3. Fetch eventDetail ─────────────────────────────────────────────
-  hudStep("Fetch event details", "busy");
-  let eventDetail;
-  try {
-    const r = await fetch(
-      `/api/ticketing/eventDetail?slug=${encodeURIComponent(order.slug)}&language=en`,
-      { credentials: "include", headers: { Accept: "application/json" } }
-    );
-    if (r.status === 401 || r.status === 403) {
+  // ── 3. Fetch eventDetail (skipped if direct API path already returned it) ──
+  if (!eventDetail) {
+    hudStep("Fetch event details", "busy");
+    try {
+      const r = await fetch(
+        `/api/ticketing/eventDetail?slug=${encodeURIComponent(order.slug)}&language=en`,
+        { credentials: "include", headers: { Accept: "application/json" } }
+      );
+      if (r.status === 401 || r.status === 403) {
+        hudUpdateLast("err");
+        hudStatus(`Authentication error (HTTP ${r.status}). Sign in to ahlan.sa, then we'll retry.`, "err");
+        report("auth_error", { error_msg: `eventDetail HTTP ${r.status}` });
+        return;
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      eventDetail = await r.json();
+    } catch (e) {
       hudUpdateLast("err");
-      hudStatus(`Authentication error (HTTP ${r.status}). Sign in to ahlan.sa, then we'll retry.`, "err");
-      report("auth_error", { error_msg: `eventDetail HTTP ${r.status}` });
+      hudStatus(`Failed to fetch event details: ${e.message}`, "err");
+      report("failed", { error_msg: e.message });
       return;
     }
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    eventDetail = await r.json();
-  } catch (e) {
-    hudUpdateLast("err");
-    hudStatus(`Failed to fetch event details: ${e.message}`, "err");
-    report("failed", { error_msg: e.message });
-    return;
+    hudUpdateLast("ok");
   }
-  hudUpdateLast("ok");
 
   // ── 4. Pick ticket (strict match — never silently swap category) ────
   const tickets = eventDetail.event_tickets || [];

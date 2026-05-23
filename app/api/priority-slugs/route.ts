@@ -11,6 +11,12 @@
  *      ones with restock pressure.
  *   3. At least one category in the top-half by price is sold out.
  *   4. % sold >= 95 — the last few seats can vanish in minutes.
+ *   5. **Low capacity drip** — events with public cap ≤ 50 (drip-restocked).
+ *   6. **Always-priority high-value events** — KSA matches + Follow-My-Team
+ *      packs + FINAL. These are the highest-value targets regardless of
+ *      current state (SAR 5.6M of hospitality value is concentrated here).
+ *   7. **High hospitality value** — events where hospitality_value_sar ≥ 250K
+ *      (top-10 by SAR open inventory).
  *
  * Response: { count: N, slugs: [...], details: [{slug, reasons: [...]}, ...] }
  */
@@ -64,15 +70,60 @@ async function readAllEvents(): Promise<Event[]> {
   return best.map(r => (typeof r.data === "string" ? JSON.parse(r.data) : (r.data as Event)));
 }
 
+/**
+ * Always-priority slugs — the highest-value AFC targets that scalpers will
+ * watch hardest. We poll these every 3 min regardless of current inventory
+ * state because (a) restocks of these go fast and (b) SAR 5.6M of MATCH
+ * hospitality is concentrated here.
+ *
+ * Ranking based on Round 3 recon report (afc27/AFC27_REPORT.md §2):
+ *   afc-cup-27-ksa-pack       SAR 999,170 hospitality
+ *   afc-cup-27-omn-vs-ksa-13  SAR 617,665
+ *   afc-cup-27-ksa-vs-pls-1   SAR 603,520 (opening match!)
+ *   afc-cup-27-ksa-vs-kuw-27  SAR 396,060
+ *   afc-cup-27-final-50       FINAL itself — 72,000-seat stadium
+ *   afc-cup-27-chn-pack       SAR 281,342
+ *   afc-cup-27-uae-pack       SAR  13,724
+ */
+const ALWAYS_PRIORITY_SLUGS = new Set([
+  "afc-cup-27-ksa-pack",
+  "afc-cup-27-omn-vs-ksa-13",
+  "afc-cup-27-ksa-vs-pls-1",
+  "afc-cup-27-ksa-vs-kuw-27",
+  "afc-cup-27-final-50",
+  "afc-cup-27-chn-pack",
+  "afc-cup-27-uae-pack",
+  // Also include the "duplicate" KSA-PLS that ahlan maintains under match 7
+  "afc-cup-27-ksa-vs-pls-7",
+]);
+
+/** SAR threshold above which an event is auto-priority for its hospitality value. */
+const HIGH_HOSPITALITY_VALUE_SAR = 250000;
+
 export async function GET() {
   const events = await readAllEvents();
 
-  const priority: Array<{ slug: string; reasons: string[]; pct_sold: number; urgency: string }> = [];
+  const priority: Array<{
+    slug: string;
+    reasons: string[];
+    pct_sold: number;
+    urgency: string;
+    hospitality_value_sar?: number;
+  }> = [];
   for (const ev of events) {
     const reasons: string[] = [];
 
     if (ev.urgency === "sold_out") reasons.push("event_sold_out");
     if (typeof ev.pct_sold === "number" && ev.pct_sold >= 95) reasons.push("pct_sold_95plus");
+
+    // Always-priority high-value events (Saudi matches + packs + FINAL).
+    if (ALWAYS_PRIORITY_SLUGS.has(ev.slug)) reasons.push("high_value_target");
+
+    // High-hospitality-value events (top by SAR open inventory). Catches any
+    // event with ≥ 250K SAR sitting in MATCH packages — KSA matches, packs,
+    // FINAL — even when we haven't hardcoded them above.
+    const hospVal = Number((ev as any).hospitality_value_sar) || 0;
+    if (hospVal >= HIGH_HOSPITALITY_VALUE_SAR) reasons.push("high_hospitality_value");
 
     // NEW: low-capacity events are tiny drip restocks — they'll sell out
     // within minutes if anyone notices. We want to catch sellouts FAST so
@@ -102,12 +153,21 @@ export async function GET() {
         reasons,
         pct_sold: ev.pct_sold || 0,
         urgency: ev.urgency,
+        hospitality_value_sar: hospVal || undefined,
       });
     }
   }
 
-  // Sort highest urgency first for readability
-  priority.sort((a, b) => b.pct_sold - a.pct_sold);
+  // Sort: always-priority first, then by hospitality_value desc, then pct_sold desc
+  priority.sort((a, b) => {
+    const aAlways = a.reasons.includes("high_value_target") ? 1 : 0;
+    const bAlways = b.reasons.includes("high_value_target") ? 1 : 0;
+    if (aAlways !== bAlways) return bAlways - aAlways;
+    const aHosp = a.hospitality_value_sar || 0;
+    const bHosp = b.hospitality_value_sar || 0;
+    if (aHosp !== bHosp) return bHosp - aHosp;
+    return b.pct_sold - a.pct_sold;
+  });
 
   return NextResponse.json({
     count: priority.length,

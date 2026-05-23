@@ -116,9 +116,15 @@ export function DetailModal({
     return { time: fmt, remaining: h.r };
   });
 
-  const stadiumCap = insights?.stadium.capacity || 0;
+  // Prefer the hardcoded venue capacity (lib/venues.ts) — accurate to the
+  // exact AFC 27 venue, independent of ahlan's drip-restock numbers. Fall
+  // back to the older insights.stadium.capacity (computed from a separate
+  // stadium lookup keyed by venue _id) if we don't have a venue match.
+  const realCap = (event as any).venue_capacity_real as number | undefined;
+  const stadiumCap = realCap || insights?.stadium.capacity || 0;
   const allocationPct = stadiumCap > 0 && event.total_capacity > 0
     ? (event.total_capacity / stadiumCap) * 100 : null;
+  const hospValueSar = (event as any).hospitality_value_sar as number | undefined;
 
   return (
     <motion.div
@@ -167,14 +173,23 @@ export function DetailModal({
           {/* ───── CAPACITY / ALLOCATION ───── */}
           {(() => {
             const peakPub = (event as any).peak_public_capacity as number | undefined;
+            const venueCityReal = (event as any).venue_city_real as string | undefined;
             const isDrip = event.total_capacity > 0 && event.total_capacity <= 50;
+            // Subtitle for the stadium tile — prefer the real venue's city
+            // from lib/venues.ts (always correct for AFC 27), fall back to
+            // insights stadium name/city, then to a generic label.
+            const stadiumSub = venueCityReal
+              ? `${event.venue || ""}${event.venue && venueCityReal ? " · " : ""}${venueCityReal}`
+              : insights?.stadium.name
+                ? insights.stadium.city
+                : "Total seats";
             return (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <StatTile
                   icon={<Users className="w-3.5 h-3.5" />}
                   label="Stadium capacity"
                   value={stadiumCap ? stadiumCap.toLocaleString() : "—"}
-                  sub={insights?.stadium.name ? insights.stadium.city : "Total seats"}
+                  sub={stadiumSub}
                 />
                 <StatTile
                   icon={<Trophy className="w-3.5 h-3.5" />}
@@ -209,6 +224,24 @@ export function DetailModal({
               </div>
             );
           })()}
+
+          {/* ───── HOSPITALITY VALUE STRIP (MATCH packages) ───── */}
+          {hospValueSar && hospValueSar > 0 && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 text-amber-300/90">
+                <DollarSign className="w-4 h-4" />
+                <span className="font-semibold uppercase text-xs tracking-wide">Hospitality available</span>
+              </div>
+              <div className="text-right">
+                <div className="text-amber-200 font-bold text-base tabular-nums">
+                  SAR {hospValueSar.toLocaleString()}
+                </div>
+                <div className="text-[10px] text-amber-200/60">
+                  {(event.hospitality_remaining ?? 0).toLocaleString()} of {(event.hospitality_capacity ?? 0).toLocaleString()} MATCH tickets
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ───── KNOCKOUT MATCHUP FORECAST ───── */}
           {insights?.is_knockout && insights.matchups.length > 0 && (

@@ -105,6 +105,7 @@ export function EventCard({
         // current cap looks like a placeholder (≤50) so users don't think
         // "the stadium only has 18 tickets".
         const peak = (event as any).peak_public_capacity as number | undefined;
+        const realCap = (event as any).venue_capacity_real as number | undefined;
         const isDrip = event.total_capacity > 0 && event.total_capacity <= 50;
         return (
           <div className="mb-3">
@@ -124,7 +125,19 @@ export function EventCard({
                 style={{ width: `${Math.max(2, event.pct_sold)}%` }}
               />
             </div>
-            {peak && peak > event.total_capacity && (
+            {/* Real stadium capacity (from hardcoded venue map) — gives users
+                a stable "size of the stadium" reference instead of ahlan's
+                drip-restock placeholder. Always shown for actual matches,
+                hidden for pack/virtual venues. */}
+            {realCap && (
+              <div className="text-[10px] text-slate-500 mt-1">
+                Stadium seats {realCap.toLocaleString()}
+                {peak && peak > event.total_capacity && peak !== realCap && (
+                  <span className="ml-2 text-slate-600">· peak drop {peak.toLocaleString()}</span>
+                )}
+              </div>
+            )}
+            {!realCap && peak && peak > event.total_capacity && (
               <div className="text-[10px] text-slate-500 mt-1">
                 Largest batch seen: {peak.toLocaleString()}
               </div>
@@ -157,6 +170,25 @@ export function EventCard({
             </span>
           </div>
         ))}
+        {/* Hospitality value strip — MATCH packages (Gold/Silver/Platinum) sit
+            alongside public tickets. Highlight the SAR value still sitting
+            open so users see the high-value targets at a glance. */}
+        {(() => {
+          const hospVal = (event as any).hospitality_value_sar as number | undefined;
+          const hospRem = (event as any).hospitality_remaining as number | undefined;
+          if (!hospVal || hospVal <= 0) return null;
+          return (
+            <div className="flex items-center justify-between pt-1 mt-1 border-t border-white/5">
+              <span className="text-amber-400/80 text-[10px] uppercase tracking-wide">Hospitality</span>
+              <span className="text-amber-300/90 font-medium" title="MATCH Gold/Silver/Platinum hospitality packages still available">
+                {hospRem != null && hospRem > 0 && (
+                  <span className="text-slate-500">{hospRem} · </span>
+                )}
+                SAR {hospVal >= 1000 ? `${(hospVal / 1000).toFixed(0)}K` : hospVal.toLocaleString()}
+              </span>
+            </div>
+          );
+        })()}
       </div>
 
       {/* footer */}

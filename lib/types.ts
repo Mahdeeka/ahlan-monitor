@@ -32,11 +32,28 @@ export interface Event {
   /** Hospitality (MATCH packages) side totals */
   hospitality_remaining?: number;
   hospitality_capacity?: number;
+  /** Total SAR value of currently-open MATCH hospitality inventory
+   *  (sum of (price + vat) × quantity). Helps surface the high-value
+   *  events to monitor (KSA matches, packs, FINAL). */
+  hospitality_value_sar?: number;
   /** Highest capacity ever observed for this slug — ahlan's API switches
    *  between full stadium inventory and tiny drip restocks, so this
    *  preserves the "real" stadium scale for display. */
   peak_public_capacity?: number;
   peak_total_capacity?: number;
+  /** Real stadium capacity from a hardcoded venue map (see lib/venues.ts).
+   *  Independent of ahlan's drip-restock placeholders. Allows the UI to show
+   *  "X sold of 72,000-seat stadium" instead of "X sold of 18 (drip)". */
+  venue_capacity_real?: number;
+  venue_city_real?: string;
+  /** Configuration flags from ahlan that we want to *watch for flips* —
+   *  when any of these go from false→true, big things happen:
+   *    enable_primary_resell  → resale marketplace opens for this event
+   *    has_resale_tickets     → resale tickets are actually listed (separate)
+   *    enable_notify_me       → wait-list opens for sold-out events */
+  enable_primary_resell?: boolean;
+  has_resale_tickets?: boolean;
+  enable_notify_me?: boolean;
   poster: string;
   logo: string;
   error?: string;
@@ -74,7 +91,10 @@ export type ChangeType =
   | "tickets_sold"
   | "bulk_sale"          // ≥50 tickets vanished in one snapshot interval — suspected scalper hit
   | "status_change"
-  | "new_event";
+  | "new_event"
+  | "resale_opened"      // enable_primary_resell flipped false → true (huge — resale market opens)
+  | "resale_listed"      // has_resale_tickets flipped false → true (first resale listings appear)
+  | "notify_me_opened";  // enable_notify_me flipped false → true (wait-list opens)
 
 export interface Change {
   slug: string;

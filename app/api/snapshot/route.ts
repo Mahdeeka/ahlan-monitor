@@ -29,6 +29,30 @@ function detectChanges(prev: Event[], curr: Event[]) {
     if (ev.error) continue;
     const p = prevBySlug.get(ev.slug);
     if (!p) continue;
+
+    // ── Configuration-flag flips (very high-priority signals) ──
+    // When ahlan turns on resale or the wait-list, the bot should know
+    // immediately. These transitions only happen once per event so they
+    // are always worth logging.
+    if ((p as any).enable_primary_resell === false && (ev as any).enable_primary_resell === true) {
+      out.push({
+        slug: ev.slug, title: ev.title, type: "resale_opened",
+        details: { from: false, to: true, alert: "AFC resale marketplace OPENED for this event" },
+      });
+    }
+    if ((p as any).has_resale_tickets === false && (ev as any).has_resale_tickets === true) {
+      out.push({
+        slug: ev.slug, title: ev.title, type: "resale_listed",
+        details: { from: false, to: true, alert: "Resale tickets newly listed for this event" },
+      });
+    }
+    if ((p as any).enable_notify_me === false && (ev as any).enable_notify_me === true) {
+      out.push({
+        slug: ev.slug, title: ev.title, type: "notify_me_opened",
+        details: { from: false, to: true, alert: "Wait-list ('notify me') opened for this event" },
+      });
+    }
+
     const delta = ev.total_remaining - p.total_remaining;
     if (delta !== 0) {
       out.push({
@@ -87,6 +111,11 @@ function hasChanged(prev: Event | undefined, curr: Event) {
   if (!prev) return true;
   if (prev.total_remaining !== curr.total_remaining) return true;
   if (prev.urgency !== curr.urgency) return true;
+  // Capture flag-flip moments in the history snapshot too — these are rare
+  // and high-value, we don't want to lose them to dedup.
+  if ((prev as any).enable_primary_resell !== (curr as any).enable_primary_resell) return true;
+  if ((prev as any).has_resale_tickets    !== (curr as any).has_resale_tickets)    return true;
+  if ((prev as any).enable_notify_me      !== (curr as any).enable_notify_me)      return true;
   const prevCats = new Map(prev.categories.map(c => [c.name, c]));
   for (const c of curr.categories) {
     const pc = prevCats.get(c.name);

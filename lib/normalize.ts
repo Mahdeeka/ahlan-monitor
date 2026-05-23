@@ -1,4 +1,5 @@
 import type { Event, Urgency } from "./types";
+import { lookupVenue } from "./venues";
 
 function safeInt(v: any): number {
   const n = parseInt(String(v ?? 0));
@@ -82,6 +83,17 @@ export function normalizeEvent(slug: string, data: any): Event {
   const total_capacity  = publicCats.reduce((s, c) => s + c.quantity, 0);
   const hospitality_remaining = hospCats.reduce((s, c) => s + c.remaining, 0);
   const hospitality_capacity  = hospCats.reduce((s, c) => s + c.quantity, 0);
+  // SAR value sitting open right now in hospitality inventory. Pulled directly
+  // from the raw `tickets` (not `cats`) so we have access to vat — `Category`
+  // doesn't expose it.
+  const hospitality_value_sar = tickets
+    .filter(t => isHospitality((t.title || "").trim()))
+    .reduce((s, t) => {
+      const price = safeInt(t.price);
+      const vat   = safeInt(t.vat);
+      const qty   = safeInt(t.quantity);
+      return s + (price + vat) * qty;
+    }, 0);
   const pct_sold = total_capacity ? ((total_capacity - total_remaining) / total_capacity) * 100 : 0;
 
   const publicCount = publicCats.length;
@@ -95,13 +107,15 @@ export function normalizeEvent(slug: string, data: any): Event {
   else if (pct_sold >= 70) urgency = "selling_fast";
 
   const numStr = slug.split("-").pop() || "";
+  const venueName = data?.venue_name || "";
+  const venueInfo = lookupVenue(venueName);
   return {
     slug,
     id: data?._id || "",
     title: data?.title || slug,
     date: data?.start_date_time_str || "",
     date_unix: safeInt(data?.start_date_time),
-    venue: data?.venue_name || "",
+    venue: venueName,
     city: data?.city || "",
     stage: classifyStage(slug),
     match_number: parseInt(numStr) || 0,
@@ -112,6 +126,16 @@ export function normalizeEvent(slug: string, data: any): Event {
     urgency,
     hospitality_remaining,
     hospitality_capacity,
+    hospitality_value_sar,
+    // Real stadium capacity from hardcoded venue map. undefined for
+    // pack/virtual venues (e.g. "Saudi Arabia" for Follow-My-Team packs).
+    venue_capacity_real: venueInfo?.capacity,
+    venue_city_real: venueInfo?.city,
+    // Configuration flags we watch for flips. Currently all false for AFC 27;
+    // when any flips true we log a high-priority change event.
+    enable_primary_resell: !!data?.enable_primary_resell,
+    has_resale_tickets:    !!data?.has_resale_tickets,
+    enable_notify_me:      !!data?.enable_notify_me,
     poster: data?.poster || "",
     logo: data?.logo || "",
   };

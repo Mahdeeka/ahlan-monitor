@@ -133,6 +133,23 @@ export async function GET(req: Request) {
     debugInfo.peak_capacity_error = String(e).slice(0, 120);
   }
 
+  // Attach real stadium capacity from the hardcoded venue map. We do this on
+  // every read (not just at snapshot time) so existing DB rows get the value
+  // immediately without waiting for a re-scrape.
+  try {
+    const { lookupVenue } = await import("@/lib/venues");
+    for (const e of events) {
+      if ((e as any).venue_capacity_real != null) continue; // already attached
+      const v = lookupVenue((e as any).venue);
+      if (v) {
+        (e as any).venue_capacity_real = v.capacity;
+        (e as any).venue_city_real = v.city;
+      }
+    }
+  } catch (e: any) {
+    debugInfo.venue_capacity_error = String(e).slice(0, 120);
+  }
+
   const summary = computeSummary(events);
 
   let recent_changes: any[] = [];

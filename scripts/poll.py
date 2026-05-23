@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """
-poll.py — single-pass ahlan.sa AFC 2027 ticket poller.
+poll.py — single-pass AFC 2027 ticket poller.
+
+PRIMARY PATH (default): direct backend
+  https://afc-api.webook.com/api/v2/event-detail/{slug}?lang=en&visible_in=afc
+  with header `token: <hardcoded webook app token>`.
+  No proxies needed, no Vercel WAF, much faster (~410ms/slug).
+
+FALLBACK PATH: proxied ahlan.sa
+  https://www.ahlan.sa/api/ticketing/eventDetail?slug=X&language=en
+  via Webshare residential proxies. Only used if direct backend rate-limits
+  us repeatedly. The fallback is invisibly invoked per-slug when direct fails.
 
 Modes:
   all       (default)  Scrape every event — used by the 10-min slow workflow.
@@ -10,16 +20,18 @@ Modes:
 
 Workflow:
   1. Build slug list:
-       - mode=all      → discover via /api/ticketing/eventList (+ canonical fallback)
+       - mode=all      → discover via afc-api.webook.com bulk + canonical fallback
        - mode=priority → fetch list from {VERCEL_URL}/api/priority-slugs
-  2. Fetch eventDetail for each slug in parallel via rotating Webshare proxies.
+  2. Fetch event-detail for each slug in parallel via direct backend (proxies
+     are kept as a fallback only).
   3. POST {events: [...], source: "github-actions-<mode>"} to /api/snapshot.
 
 Env:
   VERCEL_URL          (required) e.g. https://ahlanweb.vercel.app
   SNAPSHOT_SECRET     (required) shared secret with Vercel side
-  WEBSHARE_PROXIES    (required) "host:port:user:pass" lines, one per proxy
+  WEBSHARE_PROXIES    (optional) "host:port:user:pass" lines — kept as fallback
   POLL_MODE           (optional) "all" or "priority" — defaults to "all"
+  DISABLE_DIRECT      (optional, debug) set to "1" to force the old proxy path
 """
 import os
 import sys
@@ -35,10 +47,39 @@ VERCEL_URL    = (os.environ.get("VERCEL_URL") or "").rstrip("/")
 SECRET        = os.environ.get("SNAPSHOT_SECRET", "")
 ORG_SLUG      = "afc-asiancup-2027"
 PROXIES_RAW   = os.environ.get("WEBSHARE_PROXIES", "")
+DISABLE_DIRECT = os.environ.get("DISABLE_DIRECT") == "1"
 
 if not VERCEL_URL:
     print("ERROR: VERCEL_URL env var is required", file=sys.stderr)
     sys.exit(1)
+
+# ── DIRECT BACKEND (primary path) ──────────────────────────────────────────────
+# afc-api.webook.com is webook.com's Laravel backend, dedicated to AFC events.
+# The token is the public Webook app token, hardcoded in their browser bundle.
+# Same value works whether the request comes from webook.com, ahlan.sa, or our
+# bot — webook only checks Origin + Referer headers for CORS routing.
+DIRECT_BASE  = "https://afc-api.webook.com/api/v2"
+DIRECT_TOKEN = "e9aac1f2f0b6c07d6be070ed14829de684264278359148d6a582ca65a50934d2"
+DIRECT_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/130.0.0.0 Safari/537.36"),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "token": DIRECT_TOKEN,
+    "Origin": "https://www.ahlan.sa",
+    "Referer": "https://www.ahlan.sa/",
+}
+
+# ── FALLBACK: proxied ahlan.sa (legacy path) ──────────────────────────────────
+HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/130.0.0.0 Safari/537.36"),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.ahlan.sa/events",
+}
 
 # Parse Webshare proxies: lines of "host:port:user:pass"
 ALL_PROXIES: list[str] = []
@@ -70,14 +111,6 @@ def _label(p: str) -> str:
         return p
 
 
-def pick_proxy():
-    """Pick a healthy proxy at random. Returns None if none healthy."""
-    if not HEALTHY_PROXIES:
-        return None
-    p = random.choice(HEALTHY_PROXIES)
-    return {"http": p, "https": p}
-
-
 def mark_proxy_bad(proxy_url: str, reason: str, fatal: bool = False):
     """Record a proxy failure. Blacklist after threshold (or instantly if fatal)."""
     if proxy_url not in PROXY_FAILURES:
@@ -98,13 +131,17 @@ def mark_proxy_ok(proxy_url: str):
 
 def prewarm_proxies():
     """Quick parallel ping of all proxies — keep only ones returning 200 from a tiny endpoint.
-    Falls back to ALL_PROXIES if every test fails (so we still try during the main run)."""
+    Falls back to ALL_PROXIES if every test fails (so we still try during the main run).
+    Skipped entirely if direct backend is the primary path (proxies are only fallback)."""
     if not ALL_PROXIES:
-        print("⚠ No WEBSHARE_PROXIES configured — going direct (likely to get 429 from ahlan.sa)")
+        print("ℹ No WEBSHARE_PROXIES configured — direct backend only (no ahlan.sa fallback available)")
         return
-    # Try ahlan.sa root with a cheap HEAD-ish GET. We use ahlan.sa specifically
-    # because some proxies whitelist by destination — a generic httpbin test
-    # might pass while ahlan.sa still blocks.
+    if not DISABLE_DIRECT:
+        # Direct backend is primary; proxies are fallback. Skip the expensive
+        # parallel ping — they'll be lazily validated on demand if direct fails.
+        print(f"ℹ {len(ALL_PROXIES)} proxies available as fallback (direct backend is primary)")
+        return
+    # Old path: direct disabled, proxies are primary. Pre-warm them.
     test_url = "https://www.ahlan.sa/"
     print(f"🔌 Pre-warming {len(ALL_PROXIES)} proxies against {test_url} ...")
 
@@ -146,7 +183,7 @@ def prewarm_proxies():
         HEALTHY_PROXIES.extend(ALL_PROXIES)
         print(f"⚠ Pre-warm: zero working proxies! Will still try all {len(ALL_PROXIES)} during scrape.")
 
-# Fallback slugs if discovery fails (canonical 51 events verified via eventList API)
+# Fallback slugs if discovery fails (canonical 54 events verified via eventList API + bulk endpoint)
 FALLBACK_SLUGS = [
     # Group stage 1-36
     "afc-cup-27-ksa-vs-pls-1", "afc-cup-27-kuw-vs-oma-2", "afc-cup-27-bhr-vs-prk-3",
@@ -177,15 +214,6 @@ FALLBACK_SLUGS = [
     "afc-cup-27-ksa-pack",
     "afc-cup-27-uae-pack",
 ]
-
-HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                   "Chrome/130.0.0.0 Safari/537.36"),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.ahlan.sa/events",
-}
 
 
 def safe_int(v):
@@ -224,6 +252,10 @@ def normalize(slug: str, data: dict) -> dict:
     # are excluded so 'sold out' actually means sold out for normal fans.
     public_rem = 0; public_cap = 0
     public_count = 0; public_sold_out_count = 0
+    # Sum of (price + vat) × quantity across hospitality categories — the
+    # SAR value sitting open in MATCH packages right now. Surfaces high-value
+    # events (KSA matches, packs, FINAL) on the dashboard.
+    hosp_value_sar = 0
     for t in tickets:
         name = (t.get("title") or "").strip()
         rem = safe_int(t.get("remaining")); qty = safe_int(t.get("quantity"))
@@ -249,6 +281,12 @@ def normalize(slug: str, data: dict) -> dict:
             public_cap += qty
             public_count += 1
             if sold_out: public_sold_out_count += 1
+        else:
+            # Compute hosp value (price + vat) × full quantity even if sold out
+            # so we can show the historic max value scale for this event.
+            price = safe_int(t.get("price"))
+            vat   = safe_int(t.get("vat"))
+            hosp_value_sar += (price + vat) * qty
 
     pct = ((public_cap - public_rem) / public_cap * 100) if public_cap else 0
     if public_count == 0 and public_cap == 0:
@@ -286,23 +324,52 @@ def normalize(slug: str, data: dict) -> dict:
         # Hospitality side-totals for the modal
         "hospitality_remaining": hosp_rem,
         "hospitality_capacity":  hosp_cap,
+        "hospitality_value_sar": hosp_value_sar,
+        # Configuration flags worth watching for flips. Today all false for
+        # AFC 27; when any flips to true, the snapshot endpoint logs a
+        # change_event so the dashboard can alert.
+        "enable_primary_resell": bool(data.get("enable_primary_resell")),
+        "has_resale_tickets":    bool(data.get("has_resale_tickets")),
+        "enable_notify_me":      bool(data.get("enable_notify_me")),
         "poster": data.get("poster") or "",
         "logo": data.get("logo") or "",
     }
 
 
-def fetch_with_retry(url: str, max_attempts: int = 5, timeout: int = 15):
-    """Fetch ahlan.sa via a healthy Webshare proxy; rotate on every retry.
+def fetch_direct(slug: str, timeout: int = 12) -> dict:
+    """Fetch event detail via webook backend (primary path).
 
-    Marks bad proxies for the rest of this run so we don't waste time on
-    them. If all proxies become bad mid-run, gives up cleanly.
+    Returns the inner `data` object (matches ahlan.sa's response shape).
+    On error, returns {"_error": "..."} so callers can fall through to the
+    proxy fallback.
     """
+    url = f"{DIRECT_BASE}/event-detail/{slug}?lang=en&visible_in=afc"
+    try:
+        r = requests.get(url, headers=DIRECT_HEADERS, timeout=timeout)
+        if r.status_code == 429:
+            return {"_error": "direct 429"}
+        if r.status_code == 404:
+            return {"_error": "HTTP 404"}
+        if not r.ok:
+            return {"_error": f"direct HTTP {r.status_code}"}
+        body = r.json()
+        if body.get("status") != "success":
+            return {"_error": f"direct status={body.get('status')!r}"}
+        return body.get("data") or {"_error": "direct empty data"}
+    except requests.exceptions.Timeout:
+        return {"_error": "direct timeout"}
+    except Exception as e:
+        return {"_error": f"direct exc: {str(e)[:80]}"}
+
+
+def fetch_proxied(slug: str, max_attempts: int = 4, timeout: int = 15) -> dict:
+    """Fallback: hit ahlan.sa via a healthy Webshare proxy."""
+    url = f"https://www.ahlan.sa/api/ticketing/eventDetail?slug={slug}&language=en"
     last_err = "no attempt"
     used: set[str] = set()
     for attempt in range(1, max_attempts + 1):
         if not HEALTHY_PROXIES:
             return {"_error": "no healthy proxies"}
-        # Prefer proxies not yet tried this fetch
         candidates = [p for p in HEALTHY_PROXIES if p not in used] or HEALTHY_PROXIES
         proxy_url = random.choice(candidates)
         used.add(proxy_url)
@@ -311,19 +378,15 @@ def fetch_with_retry(url: str, max_attempts: int = 5, timeout: int = 15):
             r = requests.get(url, headers=HEADERS, proxies=proxies, timeout=timeout)
             if r.status_code == 429:
                 last_err = "HTTP 429"
-                # Not necessarily proxy fault — could be ahlan.sa rate-limiting
-                # the proxy IP. Mark a soft failure.
                 mark_proxy_bad(proxy_url, "HTTP 429", fatal=False)
                 if attempt < max_attempts:
                     time.sleep(0.5 + attempt * 0.5)
                     continue
                 return {"_error": last_err}
             if r.status_code == 404:
-                # Slug really doesn't exist — proxy is fine
                 mark_proxy_ok(proxy_url)
                 return {"_error": "HTTP 404"}
             if r.status_code in PROXY_FATAL_CODES:
-                # 402 (bandwidth), 407 (auth) — proxy is dead for the run
                 mark_proxy_bad(proxy_url, f"HTTP {r.status_code}", fatal=True)
                 last_err = f"HTTP {r.status_code}"
                 if attempt < max_attempts: continue
@@ -335,13 +398,11 @@ def fetch_with_retry(url: str, max_attempts: int = 5, timeout: int = 15):
                     time.sleep(0.5)
                     continue
                 return {"_error": last_err}
-            # Success!
             mark_proxy_ok(proxy_url)
             return r.json()
         except requests.exceptions.ProxyError as e:
             msg = str(e)[:120]
             last_err = msg
-            # Fatal proxy errors: 402/407, "unable to connect"
             fatal = "402" in msg or "407" in msg or "Unable to connect" in msg
             mark_proxy_bad(proxy_url, msg, fatal=fatal)
             if attempt < max_attempts: continue
@@ -361,16 +422,143 @@ def fetch_with_retry(url: str, max_attempts: int = 5, timeout: int = 15):
     return {"_error": last_err}
 
 
-def discover_slugs():
-    """Hit eventList API to get every published slug.
+# Track direct path success/failure for the run report
+_DIRECT_OK = 0
+_DIRECT_FAIL = 0
+_PROXY_OK = 0
+_PROXY_FAIL = 0
 
-    Returns the union of (a) what the API returns now and (b) the canonical
-    fallback list — that way we never *lose* an event if discovery returns
-    fewer than expected (e.g. transient API hiccup), and we *gain* events the
-    moment ahlan.sa publishes them.
+
+def fetch_event(slug: str) -> dict:
+    """Try direct backend first, fall back to proxied ahlan.sa on failure.
+    Returns the inner event-data dict (or {"_error": "..."} if both fail)."""
+    global _DIRECT_OK, _DIRECT_FAIL, _PROXY_OK, _PROXY_FAIL
+    if not DISABLE_DIRECT:
+        data = fetch_direct(slug)
+        if "_error" not in data:
+            _DIRECT_OK += 1
+            return data
+        _DIRECT_FAIL += 1
+        # Direct failed; if we have proxies, fall through to old path
+        if HEALTHY_PROXIES:
+            data2 = fetch_proxied(slug)
+            if "_error" not in data2:
+                _PROXY_OK += 1
+                return data2
+            _PROXY_FAIL += 1
+            # Return the more informative of the two errors
+            return data2
+        return data  # no proxies; return direct error
+    # Direct disabled — proxy only
+    data = fetch_proxied(slug)
+    if "_error" in data:
+        _PROXY_FAIL += 1
+    else:
+        _PROXY_OK += 1
+    return data
+
+
+def fetch_with_retry(url: str, max_attempts: int = 4, timeout: int = 12) -> dict:
+    """Generic GET via direct (no proxy) then proxied fallback. Used for the
+    eventList discovery call. Direct backend doesn't have eventList so this
+    always uses the proxied ahlan.sa path."""
+    last_err = "no attempt"
+    used: set[str] = set()
+    for attempt in range(1, max_attempts + 1):
+        # If we have no proxies, just try a single direct hit
+        if not HEALTHY_PROXIES:
+            try:
+                r = requests.get(url, headers=HEADERS, timeout=timeout)
+                if r.status_code == 429: return {"_error": "HTTP 429 direct"}
+                if r.status_code == 404: return {"_error": "HTTP 404"}
+                if not r.ok: return {"_error": f"HTTP {r.status_code}"}
+                return r.json()
+            except Exception as e:
+                return {"_error": f"direct exc: {str(e)[:80]}"}
+        candidates = [p for p in HEALTHY_PROXIES if p not in used] or HEALTHY_PROXIES
+        proxy_url = random.choice(candidates)
+        used.add(proxy_url)
+        proxies = {"http": proxy_url, "https": proxy_url}
+        try:
+            r = requests.get(url, headers=HEADERS, proxies=proxies, timeout=timeout)
+            if r.status_code == 429:
+                last_err = "HTTP 429"
+                mark_proxy_bad(proxy_url, "HTTP 429", fatal=False)
+                if attempt < max_attempts:
+                    time.sleep(0.5 + attempt * 0.5)
+                    continue
+                return {"_error": last_err}
+            if r.status_code == 404:
+                mark_proxy_ok(proxy_url)
+                return {"_error": "HTTP 404"}
+            if r.status_code in PROXY_FATAL_CODES:
+                mark_proxy_bad(proxy_url, f"HTTP {r.status_code}", fatal=True)
+                last_err = f"HTTP {r.status_code}"
+                if attempt < max_attempts: continue
+                return {"_error": last_err}
+            if not r.ok:
+                last_err = f"HTTP {r.status_code}"
+                mark_proxy_bad(proxy_url, last_err, fatal=False)
+                if attempt < max_attempts:
+                    time.sleep(0.5)
+                    continue
+                return {"_error": last_err}
+            mark_proxy_ok(proxy_url)
+            return r.json()
+        except requests.exceptions.ProxyError as e:
+            msg = str(e)[:120]
+            last_err = msg
+            fatal = "402" in msg or "407" in msg or "Unable to connect" in msg
+            mark_proxy_bad(proxy_url, msg, fatal=fatal)
+            if attempt < max_attempts: continue
+            return {"_error": last_err}
+        except requests.exceptions.Timeout:
+            last_err = "timeout"
+            mark_proxy_bad(proxy_url, "timeout", fatal=False)
+            if attempt < max_attempts: continue
+            return {"_error": last_err}
+        except Exception as e:
+            last_err = str(e)[:120]
+            mark_proxy_bad(proxy_url, last_err, fatal=False)
+            if attempt < max_attempts:
+                time.sleep(0.5)
+                continue
+            return {"_error": last_err}
+    return {"_error": last_err}
+
+
+def discover_slugs_direct() -> list[str]:
+    """Discover AFC slugs via the direct backend bulk endpoint.
+
+    Note: webook's pagination on this endpoint has duplicates (returns ~32/54
+    unique even when iterating all 14 advertised pages). We always UNION with
+    the canonical FALLBACK_SLUGS to guarantee no missing events.
     """
+    seen: set[str] = set()
+    try:
+        for page in range(1, 30):
+            url = (f"{DIRECT_BASE}/organizations/{ORG_SLUG}/events"
+                   f"?lang=en&visible_in=afc&page={page}")
+            r = requests.get(url, headers=DIRECT_HEADERS, timeout=12)
+            if not r.ok: break
+            d = r.json().get("data", {}) or {}
+            events = d.get("data", []) or []
+            if not events: break
+            for ev in events:
+                if ev.get("slug"): seen.add(ev["slug"])
+            last_page = d.get("last_page", 1) or 1
+            if page >= last_page: break
+        if not seen:
+            return []
+        return sorted(seen)
+    except Exception as e:
+        print(f"  ⚠ direct discovery failed: {e}")
+        return []
+
+
+def discover_slugs_proxied() -> list[str]:
+    """Discover AFC slugs via ahlan.sa /api/ticketing/eventList (legacy)."""
     discovered: list[str] = []
-    # API caps per_page at 100; paginate just in case (currently only ~51 events)
     for page in (1, 2, 3):
         url = (f"https://www.ahlan.sa/api/ticketing/eventList"
                f"?organizationSlug={ORG_SLUG}&language=en&page={page}&per_page=100")
@@ -382,19 +570,39 @@ def discover_slugs():
         page_slugs = [e["slug"] for e in events if e.get("slug")]
         discovered.extend(page_slugs)
         if len(page_slugs) < 100:
-            break  # no more pages
+            break
+    return discovered
+
+
+def discover_slugs():
+    """Hit discovery API to get every published slug, union with fallback.
+
+    Tries direct backend first (no proxy needed), falls back to proxied
+    ahlan.sa if direct returns nothing. Always unions with FALLBACK_SLUGS so
+    a transient discovery hiccup never drops an event.
+    """
+    discovered: list[str] = []
+    if not DISABLE_DIRECT:
+        discovered = discover_slugs_direct()
+        if discovered:
+            print(f"  ✓ Direct discovery: {len(discovered)} slugs from afc-api.webook.com")
+        else:
+            print(f"  ⚠ Direct discovery returned 0 — trying proxied fallback")
+            discovered = discover_slugs_proxied()
+    else:
+        discovered = discover_slugs_proxied()
 
     if not discovered:
-        print(f"  ⚠ eventList returned no slugs — using {len(FALLBACK_SLUGS)} fallback only")
+        print(f"  ⚠ All discovery failed — using {len(FALLBACK_SLUGS)} fallback only")
         return FALLBACK_SLUGS
 
     # Union with fallback so a transient miss never drops an event
     merged = list(dict.fromkeys([*discovered, *FALLBACK_SLUGS]))
     new_in_discovery = [s for s in discovered if s not in FALLBACK_SLUGS]
     if new_in_discovery:
-        print(f"  ✓ Discovered {len(discovered)} via API; {len(new_in_discovery)} NEW: {new_in_discovery}")
+        print(f"  ✓ Discovered {len(discovered)}; {len(new_in_discovery)} NEW slug(s): {new_in_discovery}")
     else:
-        print(f"  ✓ Discovered {len(discovered)} via API; merged to {len(merged)} with fallback")
+        print(f"  ✓ Discovered {len(discovered)}; merged with fallback to {len(merged)}")
     return merged
 
 
@@ -430,8 +638,10 @@ def main():
 
     t0 = time.time()
     print(f"📡 Poll started at {time.strftime('%H:%M:%S UTC', time.gmtime())}  mode={mode}")
+    path_label = "PROXIED ahlan.sa (DISABLE_DIRECT=1)" if DISABLE_DIRECT else "DIRECT afc-api.webook.com"
+    print(f"🎯 Primary path: {path_label}")
 
-    # Pre-warm proxies (parallel ping, only use ones that respond)
+    # Pre-warm proxies only if we'll actually use them as primary
     prewarm_proxies()
 
     if mode == "priority":
@@ -445,11 +655,7 @@ def main():
     # Fetch chosen events in parallel
     events = []
     with ThreadPoolExecutor(max_workers=10) as ex:
-        futures = {
-            ex.submit(fetch_with_retry,
-                      f"https://www.ahlan.sa/api/ticketing/eventDetail?slug={s}&language=en"): s
-            for s in slugs
-        }
+        futures = {ex.submit(fetch_event, s): s for s in slugs}
         for fut in as_completed(futures):
             slug = futures[fut]
             try:
@@ -460,7 +666,9 @@ def main():
 
     ok_count = sum(1 for e in events if "error" not in e)
     err_count = len(events) - ok_count
-    print(f"  Fetched {ok_count}/{len(events)} events  (errors: {err_count})  in {time.time()-t0:.1f}s")
+    elapsed = time.time() - t0
+    print(f"  Fetched {ok_count}/{len(events)} events  (errors: {err_count})  in {elapsed:.1f}s")
+    print(f"    Direct: {_DIRECT_OK} ok / {_DIRECT_FAIL} fail   Proxy: {_PROXY_OK} ok / {_PROXY_FAIL} fail")
 
     # Post to Vercel — send ALL events (including ones with errors) so the
     # dashboard's monitor can tell which slugs are failing.
