@@ -202,6 +202,50 @@ export async function getPeakCapacities(): Promise<Record<string, { public: numb
   return out;
 }
 
+/** Backfill slug_peak_capacity from the snapshots history table.
+ *
+ *  Why we need this: peak_capacity was added AFTER ahlan had already cycled
+ *  between drip-mode (3-18 tickets visible) and full-allocation mode
+ *  (sometimes 8,000+ tickets visible per match). The snapshots table
+ *  captured both modes, but the new peak_capacity table only saw the drip
+ *  values because by the time we created it, ahlan was already in drip mode.
+ *
+ *  This walks the snapshots history and updates peak_public_capacity to the
+ *  TRUE max seen for each slug. Safe to call repeatedly — only ever raises,
+ *  never lowers a peak (via GREATEST in the upsert).
+ *
+ *  Returns {scanned, updated} stats for the caller.
+ */
+export async function backfillPeakCapacityFromHistory(): Promise<{
+  scanned: number; updated: number; sample: Array<{ slug: string; peak: number }>;
+}> {
+  // Aggregate max(total_capacity) per slug from the entire history. We use
+  // total_capacity from snapshots which represents the PUBLIC capacity sum
+  // (matches the public_cap value used by updatePeakCapacity).
+  const { rows } = await sql`
+    SELECT slug, MAX(total_capacity) AS max_cap, MAX(ts) FILTER (WHERE total_capacity = (
+      SELECT MAX(s2.total_capacity) FROM snapshots s2 WHERE s2.slug = snapshots.slug
+    )) AS max_cap_ts
+    FROM snapshots
+    GROUP BY slug
+  `;
+  let updated = 0;
+  const sample: Array<{ slug: string; peak: number }> = [];
+  for (const row of rows) {
+    const slug    = row.slug as string;
+    const maxCap  = Number(row.max_cap)    || 0;
+    const ts      = Number(row.max_cap_ts) || 0;
+    if (maxCap <= 0) continue;
+    // Use updatePeakCapacity so the GREATEST() logic is consistent. Same
+    // public + total since snapshots stores public-only capacity, and
+    // hospitality side-totals weren't tracked back then anyway.
+    await updatePeakCapacity(slug, maxCap, maxCap, ts);
+    updated++;
+    if (sample.length < 10) sample.push({ slug, peak: maxCap });
+  }
+  return { scanned: rows.length, updated, sample };
+}
+
 /** Upsert latest snapshot for an event + append to history if changed. */
 export async function recordSnapshot(ev: Event, ts: number, changedFromPrev: boolean) {
   // Always upsert "latest"

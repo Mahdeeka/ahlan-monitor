@@ -100,48 +100,68 @@ export function EventCard({
 
       {/* progress */}
       {(() => {
-        // ahlan drip-restocks: total_capacity is often just the current drop,
-        // not the real stadium allocation. Surface that explicitly when the
-        // current cap looks like a placeholder (≤50) so users don't think
-        // "the stadium only has 18 tickets".
+        // ahlan oscillates between two API modes:
+        //   - drip mode: returns 3-18 tickets per category (placeholder)
+        //   - full mode: returns thousands per category (real allocation)
+        // If our current snapshot is drip but the historic peak is much bigger,
+        // SHOW THE PEAK as the headline — that's what fans actually see when
+        // ahlan flips to full mode.
         const peak = (event as any).peak_public_capacity as number | undefined;
         const realCap = (event as any).venue_capacity_real as number | undefined;
         const isDrip = event.total_capacity > 0 && event.total_capacity <= 50;
+        // Show peak as headline when we're in drip mode AND peak is much
+        // larger (>50). This is the "real ticket count" the user expects.
+        const usePeakHeadline = isDrip && peak && peak > 50;
+        const headlineCap = usePeakHeadline ? peak! : event.total_capacity;
+        // Compute pct based on the chosen headline. If we're using peak,
+        // we don't know what's truly remaining (the API only shows the drip)
+        // so we use the conservative "all peak unsold" assumption.
+        const headlineRem = usePeakHeadline ? peak! : event.total_remaining;
+        const pctSold = headlineCap > 0
+          ? Math.round(((headlineCap - headlineRem) / headlineCap) * 1000) / 10
+          : event.pct_sold;
         return (
           <div className="mb-3">
             <div className="flex justify-between items-baseline text-xs mb-1.5">
               <span className="text-slate-300">
-                <span className="font-semibold text-white">{event.total_remaining.toLocaleString()}</span>
-                <span className="text-slate-500"> / {event.total_capacity.toLocaleString()}</span>
-                {isDrip && (
+                <span className="font-semibold text-white">{headlineRem.toLocaleString()}</span>
+                <span className="text-slate-500"> / {headlineCap.toLocaleString()}</span>
+                {usePeakHeadline ? (
+                  <span
+                    className="text-emerald-400/80 ml-1.5 text-[10px] font-medium"
+                    title={`API is in drip-restock mode showing ${event.total_remaining}/${event.total_capacity}. Headline uses peak allocation ahlan exposed for this match (${peak!.toLocaleString()}).`}
+                  >
+                    real allocation
+                  </span>
+                ) : isDrip && (
                   <span className="text-amber-400/80 ml-1.5 text-[10px] font-medium">in current drop</span>
                 )}
               </span>
-              <span className={clsx("font-bold text-xs", `urgency-${event.urgency}`)}>{event.pct_sold}% sold</span>
+              <span className={clsx("font-bold text-xs", `urgency-${event.urgency}`)}>
+                {usePeakHeadline ? `${pctSold}% sold` : `${event.pct_sold}% sold`}
+              </span>
             </div>
             <div className="bg-slate-700/30 rounded-full h-1.5 overflow-hidden">
               <div
                 className={clsx("h-full rounded-full transition-all duration-500", barClass(event.urgency))}
-                style={{ width: `${Math.max(2, event.pct_sold)}%` }}
+                style={{ width: `${Math.max(2, usePeakHeadline ? pctSold : event.pct_sold)}%` }}
               />
             </div>
-            {/* Real stadium capacity (from hardcoded venue map) — gives users
-                a stable "size of the stadium" reference instead of ahlan's
-                drip-restock placeholder. Always shown for actual matches,
-                hidden for pack/virtual venues. */}
-            {realCap && (
-              <div className="text-[10px] text-slate-500 mt-1">
-                Stadium seats {realCap.toLocaleString()}
-                {peak && peak > event.total_capacity && peak !== realCap && (
-                  <span className="ml-2 text-slate-600">· peak drop {peak.toLocaleString()}</span>
-                )}
-              </div>
-            )}
-            {!realCap && peak && peak > event.total_capacity && (
-              <div className="text-[10px] text-slate-500 mt-1">
-                Largest batch seen: {peak.toLocaleString()}
-              </div>
-            )}
+            {/* Sub-line: stadium + current drip (if we used peak as headline)
+                OR just stadium (if we're not in drip mode) */}
+            <div className="text-[10px] text-slate-500 mt-1 flex flex-wrap gap-x-2">
+              {realCap && (
+                <span>Stadium {realCap.toLocaleString()}</span>
+              )}
+              {usePeakHeadline && (
+                <span className="text-amber-400/70">
+                  ahlan currently exposing {event.total_remaining}/{event.total_capacity} (drip mode)
+                </span>
+              )}
+              {!usePeakHeadline && peak && peak > event.total_capacity && peak > 50 && (
+                <span>peak drop {peak.toLocaleString()}</span>
+              )}
+            </div>
           </div>
         );
       })()}
