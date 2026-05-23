@@ -189,15 +189,56 @@ export async function updatePeakCapacity(slug: string, publicCap: number, totalC
   `;
 }
 
-/** Get peak-capacity map for all slugs at once. */
+/** Get peak-capacity map for all slugs at once.
+ *
+ *  Uses the SAME multi-reader pattern as the events route — Vercel Postgres
+ *  shows pool-isolation behaviour where the default pooled `sql` template
+ *  tag can return values STALER than `createClient()` direct. We try both
+ *  paths and pick whichever returns the HIGHER peak per slug (peaks are
+ *  monotonically non-decreasing, so the higher value is correct).
+ */
 export async function getPeakCapacities(): Promise<Record<string, { public: number; total: number }>> {
-  const r = await sql`SELECT slug, peak_public_capacity, peak_total_capacity FROM slug_peak_capacity`;
+  type Row = { slug: string; pub: number; tot: number };
+
+  // Reader 1: default pooled sql (cheap, fast, sometimes stale)
+  const fromSql = async (): Promise<Row[]> => {
+    const r = await sql`SELECT slug, peak_public_capacity AS pub, peak_total_capacity AS tot FROM slug_peak_capacity`;
+    return r.rows as unknown as Row[];
+  };
+
+  // Reader 2: createClient direct (fresher, opens a new connection)
+  const fromClient = async (): Promise<Row[]> => {
+    const vpg = await import("@vercel/postgres");
+    const c = vpg.createClient();
+    await c.connect();
+    try {
+      const r = await c.sql`SELECT slug, peak_public_capacity AS pub, peak_total_capacity AS tot FROM slug_peak_capacity`;
+      return r.rows as unknown as Row[];
+    } finally { await c.end(); }
+  };
+
+  const all: Row[][] = [];
+  for (const reader of [fromSql, fromClient]) {
+    try { all.push(await reader()); } catch { /* ignore reader errors */ }
+  }
+
+  // Merge — for each slug take the MAX value seen across all readers. This
+  // way pool-isolation lag never lowers our peak.
   const out: Record<string, { public: number; total: number }> = {};
-  for (const row of r.rows) {
-    out[row.slug as string] = {
-      public: Number(row.peak_public_capacity) || 0,
-      total:  Number(row.peak_total_capacity)  || 0,
-    };
+  for (const rows of all) {
+    for (const r of rows) {
+      const pub = Number(r.pub) || 0;
+      const tot = Number(r.tot) || 0;
+      const cur = out[r.slug];
+      if (!cur) {
+        out[r.slug] = { public: pub, total: tot };
+      } else {
+        out[r.slug] = {
+          public: Math.max(cur.public, pub),
+          total:  Math.max(cur.total,  tot),
+        };
+      }
+    }
   }
   return out;
 }
