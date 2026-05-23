@@ -165,38 +165,50 @@ export function DetailModal({
           {insights?.buy_score && <BuyScoreCard buy={insights.buy_score} />}
 
           {/* ───── CAPACITY / ALLOCATION ───── */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatTile
-              icon={<Users className="w-3.5 h-3.5" />}
-              label="Stadium capacity"
-              value={stadiumCap ? stadiumCap.toLocaleString() : "—"}
-              sub={insights?.stadium.name ? insights.stadium.city : "Total seats"}
-            />
-            <StatTile
-              icon={<Trophy className="w-3.5 h-3.5" />}
-              label="On sale"
-              value={event.total_capacity.toLocaleString()}
-              sub={allocationPct != null ? `${allocationPct.toFixed(0)}% of stadium` : "Allocated"}
-            />
-            <StatTile
-              icon={<TrendingUp className="w-3.5 h-3.5" />}
-              label="Sold"
-              value={(event.total_capacity - event.total_remaining).toLocaleString()}
-              sub={`${event.pct_sold}% of allocation`}
-              tone={event.urgency}
-            />
-            <StatTile
-              icon={<Clock className="w-3.5 h-3.5" />}
-              label="Remaining"
-              value={event.total_remaining.toLocaleString()}
-              sub={
-                insights?.buy_score?.velocity_per_day != null && insights.buy_score.velocity_per_day > 0
-                  ? `~${Math.round(event.total_remaining / insights.buy_score.velocity_per_day)}d at current pace`
-                  : "Live"
-              }
-              tone={event.urgency}
-            />
-          </div>
+          {(() => {
+            const peakPub = (event as any).peak_public_capacity as number | undefined;
+            const isDrip = event.total_capacity > 0 && event.total_capacity <= 50;
+            return (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <StatTile
+                  icon={<Users className="w-3.5 h-3.5" />}
+                  label="Stadium capacity"
+                  value={stadiumCap ? stadiumCap.toLocaleString() : "—"}
+                  sub={insights?.stadium.name ? insights.stadium.city : "Total seats"}
+                />
+                <StatTile
+                  icon={<Trophy className="w-3.5 h-3.5" />}
+                  label={isDrip ? "On sale (current drop)" : "On sale"}
+                  value={event.total_capacity.toLocaleString()}
+                  sub={
+                    peakPub && peakPub > event.total_capacity
+                      ? `peak drop: ${peakPub.toLocaleString()}`
+                      : allocationPct != null
+                        ? `${allocationPct.toFixed(0)}% of stadium`
+                        : "Allocated"
+                  }
+                />
+                <StatTile
+                  icon={<TrendingUp className="w-3.5 h-3.5" />}
+                  label="Sold"
+                  value={(event.total_capacity - event.total_remaining).toLocaleString()}
+                  sub={isDrip ? "of current drop" : `${event.pct_sold}% of allocation`}
+                  tone={event.urgency}
+                />
+                <StatTile
+                  icon={<Clock className="w-3.5 h-3.5" />}
+                  label="Remaining"
+                  value={event.total_remaining.toLocaleString()}
+                  sub={
+                    insights?.buy_score?.velocity_per_day != null && insights.buy_score.velocity_per_day > 0
+                      ? `~${Math.round(event.total_remaining / insights.buy_score.velocity_per_day)}d at current pace`
+                      : isDrip ? "in current drop" : "Live"
+                  }
+                  tone={event.urgency}
+                />
+              </div>
+            );
+          })()}
 
           {/* ───── KNOCKOUT MATCHUP FORECAST ───── */}
           {insights?.is_knockout && insights.matchups.length > 0 && (

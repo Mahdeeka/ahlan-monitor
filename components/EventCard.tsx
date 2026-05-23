@@ -99,21 +99,39 @@ export function EventCard({
       </div>
 
       {/* progress */}
-      <div className="mb-3">
-        <div className="flex justify-between items-baseline text-xs mb-1.5">
-          <span className="text-slate-300">
-            <span className="font-semibold text-white">{event.total_remaining.toLocaleString()}</span>
-            <span className="text-slate-500"> / {event.total_capacity.toLocaleString()}</span>
-          </span>
-          <span className={clsx("font-bold text-xs", `urgency-${event.urgency}`)}>{event.pct_sold}% sold</span>
-        </div>
-        <div className="bg-slate-700/30 rounded-full h-1.5 overflow-hidden">
-          <div
-            className={clsx("h-full rounded-full transition-all duration-500", barClass(event.urgency))}
-            style={{ width: `${Math.max(2, event.pct_sold)}%` }}
-          />
-        </div>
-      </div>
+      {(() => {
+        // ahlan drip-restocks: total_capacity is often just the current drop,
+        // not the real stadium allocation. Surface that explicitly when the
+        // current cap looks like a placeholder (≤50) so users don't think
+        // "the stadium only has 18 tickets".
+        const peak = (event as any).peak_public_capacity as number | undefined;
+        const isDrip = event.total_capacity > 0 && event.total_capacity <= 50;
+        return (
+          <div className="mb-3">
+            <div className="flex justify-between items-baseline text-xs mb-1.5">
+              <span className="text-slate-300">
+                <span className="font-semibold text-white">{event.total_remaining.toLocaleString()}</span>
+                <span className="text-slate-500"> / {event.total_capacity.toLocaleString()}</span>
+                {isDrip && (
+                  <span className="text-amber-400/80 ml-1.5 text-[10px] font-medium">in current drop</span>
+                )}
+              </span>
+              <span className={clsx("font-bold text-xs", `urgency-${event.urgency}`)}>{event.pct_sold}% sold</span>
+            </div>
+            <div className="bg-slate-700/30 rounded-full h-1.5 overflow-hidden">
+              <div
+                className={clsx("h-full rounded-full transition-all duration-500", barClass(event.urgency))}
+                style={{ width: `${Math.max(2, event.pct_sold)}%` }}
+              />
+            </div>
+            {peak && peak > event.total_capacity && (
+              <div className="text-[10px] text-slate-500 mt-1">
+                Largest batch seen: {peak.toLocaleString()}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* 24h sparkline */}
       <div className="mb-3">
@@ -130,7 +148,7 @@ export function EventCard({
             <span className="text-slate-400">{c.name}</span>
             <span className={c.sold_out ? "text-red-400 font-medium" : "text-slate-200"}>
               {c.sold_out
-                ? "SOLD OUT"
+                ? <span title="ahlan marked this category sold out (sold_out=true). New drops may appear later.">SOLD OUT</span>
                 : <><span className="font-medium">{c.remaining.toLocaleString()}</span>
                     <span className="text-slate-500"> / {c.quantity.toLocaleString()}</span>
                     {c.price > 0 && <span className="text-slate-500"> · SAR {c.price}</span>}
