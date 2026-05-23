@@ -1,0 +1,31 @@
+name: Backfill peak capacity (one-shot)
+
+# One-shot helper: POSTs to /api/admin/backfill-peaks with the shared secret
+# to walk the snapshots history and populate slug_peak_capacity. Safe to
+# re-run (idempotent — peaks only ever rise). Use workflow_dispatch from
+# the Actions tab when needed.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Hit /api/admin/backfill-peaks
+        env:
+          VERCEL_URL: ${{ secrets.VERCEL_URL }}
+          SNAPSHOT_SECRET: ${{ secrets.SNAPSHOT_SECRET }}
+        run: |
+          set -e
+          echo "POST $VERCEL_URL/api/admin/backfill-peaks"
+          RESP=$(curl -s -X POST "$VERCEL_URL/api/admin/backfill-peaks" \
+            -H "Authorization: Bearer $SNAPSHOT_SECRET" \
+            -H "Content-Type: application/json" \
+            -d '{}' --max-time 90 -w "\nHTTP=%{http_code}")
+          echo "$RESP"
+          # Fail the job if HTTP wasn't 200
+          if ! echo "$RESP" | grep -q "HTTP=200"; then
+            exit 1
+          fi
