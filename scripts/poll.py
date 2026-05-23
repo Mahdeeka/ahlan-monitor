@@ -172,6 +172,10 @@ FALLBACK_SLUGS = [
     "afc-cup-27-w45-v-w46-49", "afc-cup-27-w47-v-w48-50",
     # FINAL
     "afc-cup-27-final-50",
+    # Match packs (bundle products added by ahlan after our initial list)
+    "afc-cup-27-chn-pack",
+    "afc-cup-27-ksa-pack",
+    "afc-cup-27-uae-pack",
 ]
 
 HEADERS = {

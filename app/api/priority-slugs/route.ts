@@ -74,9 +74,19 @@ export async function GET() {
     if (ev.urgency === "sold_out") reasons.push("event_sold_out");
     if (typeof ev.pct_sold === "number" && ev.pct_sold >= 95) reasons.push("pct_sold_95plus");
 
-    if (Array.isArray(ev.categories) && ev.categories.length > 0) {
+    // NEW: low-capacity events are tiny drip restocks — they'll sell out
+    // within minutes if anyone notices. We want to catch sellouts FAST so
+    // we can immediately mark them as "alert" worthy for repeat polling.
+    // Threshold tuned to ahlan's typical drip release size (3-50 per cat).
+    const publicCats = Array.isArray(ev.categories)
+      ? ev.categories.filter(c => !(c as any).is_hospitality && !(c.name || "").toUpperCase().startsWith("MATCH"))
+      : [];
+    const publicCap = publicCats.reduce((s, c) => s + (Number(c.quantity) || 0), 0);
+    if (publicCap > 0 && publicCap <= 50) reasons.push("low_capacity_drip");
+
+    if (publicCats.length > 0) {
       // Sort by price descending so [0] is the priciest
-      const byPrice = [...ev.categories].sort((a, b) => (b.price || 0) - (a.price || 0));
+      const byPrice = [...publicCats].sort((a, b) => (Number(b.price) || 0) - (Number(a.price) || 0));
       if (byPrice[0]?.sold_out) reasons.push("top_cat_sold_out");
 
       // Top-half by price = first half of sorted list

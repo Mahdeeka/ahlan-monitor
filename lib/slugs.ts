@@ -32,4 +32,8 @@ export const AFC_2027_SLUGS = [
   "afc-cup-27-w45-v-w46-49",   "afc-cup-27-w47-v-w48-50",
   // FINAL
   "afc-cup-27-final-50",
+  // Match packs — bundle ticket products ahlan added later (auto-discovered)
+  "afc-cup-27-chn-pack",
+  "afc-cup-27-ksa-pack",
+  "afc-cup-27-uae-pack",
 ];
