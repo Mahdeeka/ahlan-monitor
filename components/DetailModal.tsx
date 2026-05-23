@@ -170,39 +170,29 @@ export function DetailModal({
           {/* ───── BUY SCORE ───── */}
           {insights?.buy_score && <BuyScoreCard buy={insights.buy_score} />}
 
-          {/* ───── CAPACITY / ALLOCATION ───── */}
+          {/* ───── CAPACITY / ALLOCATION ─────
+              4 honest tiles, no peak-as-remaining conflation:
+                1. Stadium    — physical seats in the venue (hardcoded)
+                2. Allocation — peak public capacity ahlan has ever exposed
+                3. Drop       — what's currently visible from the API
+                4. Buyable    — what's actually buyable RIGHT NOW (after
+                                sold_out flags zero things out) */}
           {(() => {
             const peakPub = (event as any).peak_public_capacity as number | undefined;
             const venueCityReal = (event as any).venue_city_real as string | undefined;
             const isDrip = event.total_capacity > 0 && event.total_capacity <= 50;
-            // When ahlan flips to drip mode but we know the historical peak
-            // was thousands, use the peak as the "real allocation" number.
-            const usePeakHeadline = isDrip && peakPub && peakPub > 50;
-            // Subtitle for the stadium tile — prefer the real venue's city
-            // from lib/venues.ts (always correct for AFC 27), fall back to
-            // insights stadium name/city, then to a generic label.
+            const peakIsNoteworthy = peakPub && peakPub > Math.max(50, event.total_capacity * 5);
             const stadiumSub = venueCityReal
               ? `${event.venue || ""}${event.venue && venueCityReal ? " · " : ""}${venueCityReal}`
               : insights?.stadium.name
                 ? insights.stadium.city
                 : "Total seats";
-            const onSaleValue   = usePeakHeadline ? peakPub! : event.total_capacity;
-            const onSaleLabel   = usePeakHeadline
-              ? "On sale (peak allocation)"
-              : isDrip ? "On sale (current drop)" : "On sale";
-            const onSaleSub     = usePeakHeadline
-              ? `ahlan currently dripping ${event.total_capacity}`
-              : peakPub && peakPub > event.total_capacity
-                ? `peak drop: ${peakPub.toLocaleString()}`
-                : allocationPct != null
-                  ? `${allocationPct.toFixed(0)}% of stadium`
-                  : "Allocated";
-            const remainingValue = usePeakHeadline ? peakPub! : event.total_remaining;
-            const remainingSub = usePeakHeadline
-              ? "(peak — true remaining unknown)"
-              : insights?.buy_score?.velocity_per_day != null && insights.buy_score.velocity_per_day > 0
-                ? `~${Math.round(event.total_remaining / insights.buy_score.velocity_per_day)}d at current pace`
-                : isDrip ? "in current drop" : "Live";
+            const allocVal = peakPub && peakPub > 0 ? peakPub : event.total_capacity;
+            const allocSub = peakIsNoteworthy
+              ? `historic max ahlan exposed`
+              : allocationPct != null
+                ? `${allocationPct.toFixed(0)}% of stadium`
+                : "Public allocation";
             return (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <StatTile
@@ -213,22 +203,30 @@ export function DetailModal({
                 />
                 <StatTile
                   icon={<Trophy className="w-3.5 h-3.5" />}
-                  label={onSaleLabel}
-                  value={onSaleValue.toLocaleString()}
-                  sub={onSaleSub}
+                  label="Real allocation"
+                  value={allocVal.toLocaleString()}
+                  sub={allocSub}
                 />
                 <StatTile
                   icon={<TrendingUp className="w-3.5 h-3.5" />}
-                  label="Sold"
-                  value={(event.total_capacity - event.total_remaining).toLocaleString()}
-                  sub={isDrip ? "of current drop" : `${event.pct_sold}% of allocation`}
+                  label={isDrip ? "Currently in drop" : "On sale now"}
+                  value={event.total_capacity.toLocaleString()}
+                  sub={peakIsNoteworthy
+                    ? `drip mode — ahlan throttling`
+                    : `${event.pct_sold}% of drop sold`}
                   tone={event.urgency}
                 />
                 <StatTile
                   icon={<Clock className="w-3.5 h-3.5" />}
-                  label="Remaining"
-                  value={remainingValue.toLocaleString()}
-                  sub={remainingSub}
+                  label="Buyable now"
+                  value={event.total_remaining.toLocaleString()}
+                  sub={
+                    event.urgency === "sold_out"
+                      ? "all categories sold out"
+                      : insights?.buy_score?.velocity_per_day != null && insights.buy_score.velocity_per_day > 0
+                        ? `~${Math.round(event.total_remaining / insights.buy_score.velocity_per_day)}d at current pace`
+                        : "live remaining"
+                  }
                   tone={event.urgency}
                 />
               </div>

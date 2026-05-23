@@ -100,68 +100,54 @@ export function EventCard({
 
       {/* progress */}
       {(() => {
-        // ahlan oscillates between two API modes:
-        //   - drip mode: returns 3-18 tickets per category (placeholder)
-        //   - full mode: returns thousands per category (real allocation)
-        // If our current snapshot is drip but the historic peak is much bigger,
-        // SHOW THE PEAK as the headline — that's what fans actually see when
-        // ahlan flips to full mode.
+        // The LIVE state from ahlan's API is the source of truth for "what
+        // can I buy RIGHT NOW". Today ahlan drip-restocks (3-18 visible at a
+        // time, often all marked sold_out). The peak is the historic max
+        // allocation we've ever seen — useful context, NOT a substitute for
+        // current remaining.
         const peak = (event as any).peak_public_capacity as number | undefined;
         const realCap = (event as any).venue_capacity_real as number | undefined;
         const isDrip = event.total_capacity > 0 && event.total_capacity <= 50;
-        // Show peak as headline when we're in drip mode AND peak is much
-        // larger (>50). This is the "real ticket count" the user expects.
-        const usePeakHeadline = isDrip && peak && peak > 50;
-        const headlineCap = usePeakHeadline ? peak! : event.total_capacity;
-        // Compute pct based on the chosen headline. If we're using peak,
-        // we don't know what's truly remaining (the API only shows the drip)
-        // so we use the conservative "all peak unsold" assumption.
-        const headlineRem = usePeakHeadline ? peak! : event.total_remaining;
-        const pctSold = headlineCap > 0
-          ? Math.round(((headlineCap - headlineRem) / headlineCap) * 1000) / 10
-          : event.pct_sold;
+        // Peak is "noteworthy" when much bigger than the current drop. This
+        // signals to the user "ahlan has run thousands through here before;
+        // it's a high-demand match worth watching for the next big drop".
+        const peakIsNoteworthy = peak && peak > Math.max(50, event.total_capacity * 5);
         return (
           <div className="mb-3">
+            {/* Headline: the LIVE state — what fans can actually buy now. */}
             <div className="flex justify-between items-baseline text-xs mb-1.5">
               <span className="text-slate-300">
-                <span className="font-semibold text-white">{headlineRem.toLocaleString()}</span>
-                <span className="text-slate-500"> / {headlineCap.toLocaleString()}</span>
-                {usePeakHeadline ? (
-                  <span
-                    className="text-emerald-400/80 ml-1.5 text-[10px] font-medium"
-                    title={`API is in drip-restock mode showing ${event.total_remaining}/${event.total_capacity}. Headline uses peak allocation ahlan exposed for this match (${peak!.toLocaleString()}).`}
-                  >
-                    real allocation
-                  </span>
-                ) : isDrip && (
+                <span className="font-semibold text-white">{event.total_remaining.toLocaleString()}</span>
+                <span className="text-slate-500"> / {event.total_capacity.toLocaleString()}</span>
+                {isDrip && (
                   <span className="text-amber-400/80 ml-1.5 text-[10px] font-medium">in current drop</span>
                 )}
               </span>
               <span className={clsx("font-bold text-xs", `urgency-${event.urgency}`)}>
-                {usePeakHeadline ? `${pctSold}% sold` : `${event.pct_sold}% sold`}
+                {event.pct_sold}% sold
               </span>
             </div>
             <div className="bg-slate-700/30 rounded-full h-1.5 overflow-hidden">
               <div
                 className={clsx("h-full rounded-full transition-all duration-500", barClass(event.urgency))}
-                style={{ width: `${Math.max(2, usePeakHeadline ? pctSold : event.pct_sold)}%` }}
+                style={{ width: `${Math.max(2, event.pct_sold)}%` }}
               />
             </div>
-            {/* Sub-line: stadium + current drip (if we used peak as headline)
-                OR just stadium (if we're not in drip mode) */}
-            <div className="text-[10px] text-slate-500 mt-1 flex flex-wrap gap-x-2">
-              {realCap && (
-                <span>Stadium {realCap.toLocaleString()}</span>
-              )}
-              {usePeakHeadline && (
-                <span className="text-amber-400/70">
-                  ahlan currently exposing {event.total_remaining}/{event.total_capacity} (drip mode)
-                </span>
-              )}
-              {!usePeakHeadline && peak && peak > event.total_capacity && peak > 50 && (
-                <span>peak drop {peak.toLocaleString()}</span>
-              )}
-            </div>
+            {/* Context line — stadium + historic peak. Honest framing: peak
+                is what ahlan has EVER allocated, not what's remaining now. */}
+            {(realCap || peakIsNoteworthy) && (
+              <div className="text-[10px] text-slate-500 mt-1 flex flex-wrap gap-x-2">
+                {realCap && <span>Stadium {realCap.toLocaleString()}</span>}
+                {peakIsNoteworthy && (
+                  <span
+                    className="text-emerald-400/70"
+                    title={`ahlan has at some point exposed up to ${peak!.toLocaleString()} tickets for this match (real allocation). They're currently in drip-restock mode showing ${event.total_capacity}.`}
+                  >
+                    Real allocation seen: {peak!.toLocaleString()}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         );
       })()}
