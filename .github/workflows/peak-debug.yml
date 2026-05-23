@@ -1,0 +1,18 @@
+name: Debug peak capacity table
+on:
+  workflow_dispatch: {}
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          U: ${{ secrets.VERCEL_URL }}
+          S: ${{ secrets.SNAPSHOT_SECRET }}
+        run: |
+          echo "=== Re-running backfill first ==="
+          curl -s -X POST "$U/api/admin/backfill-peaks" \
+            -H "Authorization: Bearer $S" -H "Content-Type: application/json" -d '{}' --max-time 90
+          echo
+          echo "=== Now reading peak-debug ==="
+          curl -s "$U/api/admin/peak-debug" \
+            -H "Authorization: Bearer $S" --max-time 60 | python3 -m json.tool
