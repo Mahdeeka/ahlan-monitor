@@ -119,21 +119,19 @@ export async function GET(req: Request) {
 
   // Attach peak capacity (highest capacity ever seen for each slug) so the UI
   // can show real stadium scale instead of ahlan's tiny drip-restock numbers.
+  // getPeakCapacities() reads through multiple DB connection paths and picks
+  // the MAX per slug — defends against pool-isolation lag where the pooled
+  // `sql` template can return staler values than a direct client connection.
   try {
     const { getPeakCapacities } = await import("@/lib/db");
     const peaks = await getPeakCapacities();
-    debugInfo.peaks_dict_size = Object.keys(peaks).length;
-    debugInfo.peaks_sample = Object.entries(peaks).slice(0, 5).map(([k, v]) => ({ slug: k, public: v.public }));
-    let attachedCount = 0;
     for (const e of events) {
       const p = peaks[e.slug];
       if (p && p.public > 0) {
         (e as any).peak_public_capacity = p.public;
         (e as any).peak_total_capacity = p.total;
-        attachedCount++;
       }
     }
-    debugInfo.peaks_attached = attachedCount;
   } catch (e: any) {
     debugInfo.peak_capacity_error = String(e).slice(0, 120);
   }
