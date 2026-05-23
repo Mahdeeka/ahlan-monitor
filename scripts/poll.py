@@ -227,17 +227,25 @@ def normalize(slug: str, data: dict) -> dict:
     for t in tickets:
         name = (t.get("title") or "").strip()
         rem = safe_int(t.get("remaining")); qty = safe_int(t.get("quantity"))
-        sold_out = (rem == 0 and qty > 0)
+        # Trust ahlan's sold_out flag — they sometimes return remaining>0 while
+        # marking the category sold_out (drip restock between releases). If
+        # the API doesn't include it, fall back to remaining==0.
+        api_sold_out = bool(t.get("sold_out"))
+        sold_out = api_sold_out or (rem == 0 and qty > 0)
+        # If the API says sold out, treat remaining as 0 for total counting —
+        # those "remaining" tickets aren't actually buyable.
+        effective_rem = 0 if api_sold_out else rem
         cats.append({
             "name": name,
-            "remaining": rem, "quantity": qty,
+            "remaining": effective_rem,
+            "quantity": qty,
             "price": safe_int(t.get("price")),
             "max_per_order": safe_int(t.get("max_per_order")),
             "sold_out": sold_out,
             "is_hospitality": is_hospitality(name),
         })
         if not is_hospitality(name):
-            public_rem += rem
+            public_rem += effective_rem
             public_cap += qty
             public_count += 1
             if sold_out: public_sold_out_count += 1

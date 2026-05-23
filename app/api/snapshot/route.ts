@@ -11,7 +11,7 @@
 import { NextResponse } from "next/server";
 import {
   initSchema, getLatestEvents, recordSnapshot, recordChange,
-  recordScrapeRun, markSlugError, clearSlugError,
+  recordScrapeRun, markSlugError, clearSlugError, updatePeakCapacity,
 } from "@/lib/db";
 import type { Event } from "@/lib/types";
 
@@ -139,6 +139,13 @@ export async function POST(req: Request) {
     const changed = hasChanged(prevBySlug.get(ev.slug), ev);
     await recordSnapshot(ev, ts, changed);
     try { await clearSlugError(ev.slug); } catch {/* */}
+    // Track peak capacity (we want the "real" stadium scale, not the
+    // current drip-restock placeholder)
+    try {
+      const publicCap = (ev as any).total_capacity || 0;
+      const hospCap   = (ev as any).hospitality_capacity || 0;
+      await updatePeakCapacity(ev.slug, publicCap, publicCap + hospCap, ts);
+    } catch {/* */}
     if (changed) inserted++;
   }));
   for (const ch of changes) {

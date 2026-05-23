@@ -77,6 +77,18 @@ export async function initSchema() {
     )
   `;
 
+  // Track peak capacity per slug — ahlan's API switches between full
+  // stadium inventory and tiny drip-restock placeholders. Remember the
+  // highest capacity we ever saw so the dashboard can show real scale.
+  await sql`
+    CREATE TABLE IF NOT EXISTS slug_peak_capacity (
+      slug TEXT PRIMARY KEY,
+      peak_public_capacity INTEGER NOT NULL DEFAULT 0,
+      peak_total_capacity  INTEGER NOT NULL DEFAULT 0,
+      observed_at INTEGER NOT NULL
+    )
+  `;
+
   // Buy-order queue — the dashboard enqueues, the user's buy_worker.py dequeues
   await sql`
     CREATE TABLE IF NOT EXISTS buy_orders (
@@ -159,6 +171,35 @@ export async function clearSlugError(slug: string) {
   await sql`
     UPDATE slug_errors SET consecutive_failures = 0 WHERE slug = ${slug}
   `;
+}
+
+/** Bump peak capacity if the current scrape saw more than ever before. */
+export async function updatePeakCapacity(slug: string, publicCap: number, totalCap: number, ts: number) {
+  if (publicCap <= 0 && totalCap <= 0) return;
+  await sql`
+    INSERT INTO slug_peak_capacity (slug, peak_public_capacity, peak_total_capacity, observed_at)
+    VALUES (${slug}, ${publicCap}, ${totalCap}, ${ts})
+    ON CONFLICT (slug) DO UPDATE SET
+      peak_public_capacity = GREATEST(slug_peak_capacity.peak_public_capacity, EXCLUDED.peak_public_capacity),
+      peak_total_capacity  = GREATEST(slug_peak_capacity.peak_total_capacity,  EXCLUDED.peak_total_capacity),
+      observed_at = CASE
+        WHEN EXCLUDED.peak_public_capacity > slug_peak_capacity.peak_public_capacity THEN EXCLUDED.observed_at
+        ELSE slug_peak_capacity.observed_at
+      END
+  `;
+}
+
+/** Get peak-capacity map for all slugs at once. */
+export async function getPeakCapacities(): Promise<Record<string, { public: number; total: number }>> {
+  const r = await sql`SELECT slug, peak_public_capacity, peak_total_capacity FROM slug_peak_capacity`;
+  const out: Record<string, { public: number; total: number }> = {};
+  for (const row of r.rows) {
+    out[row.slug as string] = {
+      public: Number(row.peak_public_capacity) || 0,
+      total:  Number(row.peak_total_capacity)  || 0,
+    };
+  }
+  return out;
 }
 
 /** Upsert latest snapshot for an event + append to history if changed. */

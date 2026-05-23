@@ -117,6 +117,22 @@ export async function GET(req: Request) {
     from_db = false;
   }
 
+  // Attach peak capacity (highest capacity ever seen for each slug) so the UI
+  // can show real stadium scale instead of ahlan's tiny drip-restock numbers.
+  try {
+    const { getPeakCapacities } = await import("@/lib/db");
+    const peaks = await getPeakCapacities();
+    for (const e of events) {
+      const p = peaks[e.slug];
+      if (p) {
+        (e as any).peak_public_capacity = p.public;
+        (e as any).peak_total_capacity = p.total;
+      }
+    }
+  } catch (e: any) {
+    debugInfo.peak_capacity_error = String(e).slice(0, 120);
+  }
+
   const summary = computeSummary(events);
 
   let recent_changes: any[] = [];

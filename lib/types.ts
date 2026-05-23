@@ -32,6 +32,11 @@ export interface Event {
   /** Hospitality (MATCH packages) side totals */
   hospitality_remaining?: number;
   hospitality_capacity?: number;
+  /** Highest capacity ever observed for this slug — ahlan's API switches
+   *  between full stadium inventory and tiny drip restocks, so this
+   *  preserves the "real" stadium scale for display. */
+  peak_public_capacity?: number;
+  peak_total_capacity?: number;
   poster: string;
   logo: string;
   error?: string;

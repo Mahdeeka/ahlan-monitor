@@ -59,13 +59,18 @@ export function normalizeEvent(slug: string, data: any): Event {
     const remaining = safeInt(t.remaining);
     const quantity = safeInt(t.quantity);
     const name = ((t.title as string) || "").trim();
+    // Trust ahlan's sold_out flag — they often return remaining>0 while
+    // flagging the category sold_out (drip-restock placeholder).
+    const apiSoldOut = !!t.sold_out;
+    const isSoldOut = apiSoldOut || (remaining === 0 && quantity > 0);
+    const effectiveRemaining = apiSoldOut ? 0 : remaining;
     return {
       name,
-      remaining,
+      remaining: effectiveRemaining,
       quantity,
       price: safeInt(t.price),
       max_per_order: safeInt(t.max_per_order),
-      sold_out: remaining === 0 && quantity > 0,
+      sold_out: isSoldOut,
       is_hospitality: isHospitality(name),
     };
   });
