@@ -205,8 +205,16 @@
 
   #cake-svg{ width:min(340px, 88vw); height:auto; overflow:visible; touch-action:none; }
   .flamegrp.scared{ animation-duration:.22s !important; }
-  #dim{ position:fixed; inset:0; z-index:40; background:rgba(3,5,16,.78); opacity:0; pointer-events:none; transition:opacity 1.2s ease; }
+  #dim{ position:fixed; inset:0; z-index:45; background:rgba(3,5,16,.82);
+    opacity:0; pointer-events:none; transition:opacity .8s ease;
+    display:flex; align-items:center; justify-content:center; text-align:center; padding:2rem; }
   #dim.on{ opacity:1; }
+  #dim .wishmsg{
+    font-family:var(--display); font-style:italic; font-weight:600;
+    font-size:clamp(1.6rem, 6.5vw, 2.4rem); color:var(--gold); text-wrap:balance;
+    transform:translateY(12px) scale(.96); transition:transform .8s ease; line-height:1.35;
+  }
+  #dim.on .wishmsg{ transform:none; }
   #cake-svg .candle-hit{ cursor:pointer; }
   .flamegrp{ transform-origin:center bottom; transform-box:fill-box; animation:flick 0.9s ease-in-out infinite alternate; }
   .flamegrp:nth-child(odd){ animation-duration:1.15s; }
@@ -403,7 +411,7 @@
 <canvas id="fx"></canvas>
 <button class="music-fab" id="music" aria-label="Music on or off">♪ el musi2a</button>
 <div id="hand" hidden aria-hidden="true"><span class="fing">👆</span><span class="lbl">duggi hon</span></div>
-<div id="dim" aria-hidden="true"></div>
+<div id="dim" aria-hidden="true"><div class="wishmsg" id="wishmsg"></div></div>
 
 <!-- ============ ACT I ============ -->
 <main class="scene" id="gate">
@@ -963,18 +971,16 @@
     launchWish(r.left + r.width / 2, r.top + 10);
     if (++out === CANDLES){
       guideTo(null);
+      ping("wished");
       var hint = document.getElementById("hint");
       hint.textContent = "5 sham3at… 5 njum jdad bel sama ✨";
       var dim = document.getElementById("dim");
-      setTimeout(function(){
-        hint.textContent = "Sakri 3younek w etmanni umniye… ✨";
-        dim.classList.add("on");
-      }, 1400);
-      ping("wished");
+      document.getElementById("wishmsg").textContent = "Sakri 3younek… w etmanni umniye ✨";
+      setTimeout(function(){ dim.classList.add("on"); }, 700);
       setTimeout(function(){
         dim.classList.remove("on");
         show(cakeScene, party, celebrate);
-      }, 4800);
+      }, 3200);
     }
   }
   /* finger-sweep magic: flames panic near her finger, then turn into stars */
