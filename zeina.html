@@ -205,7 +205,7 @@
 
   #cake-svg{ width:min(340px, 88vw); height:auto; overflow:visible; touch-action:none; }
   .flamegrp.scared{ animation-duration:.22s !important; }
-  #dim{ position:fixed; inset:0; z-index:40; background:rgba(3,5,16,.78); opacity:0; pointer-events:none; transition:opacity 1.9s ease; }
+  #dim{ position:fixed; inset:0; z-index:40; background:rgba(3,5,16,.78); opacity:0; pointer-events:none; transition:opacity 1.2s ease; }
   #dim.on{ opacity:1; }
   #cake-svg .candle-hit{ cursor:pointer; }
   .flamegrp{ transform-origin:center bottom; transform-box:fill-box; animation:flick 0.9s ease-in-out infinite alternate; }
@@ -962,12 +962,12 @@
       setTimeout(function(){
         hint.textContent = "Sakri 3younek w etmanni umniye… ✨";
         dim.classList.add("on");
-      }, 2300);
+      }, 1400);
       ping("wish");
       setTimeout(function(){
         dim.classList.remove("on");
         show(cakeScene, party, celebrate);
-      }, 7600);
+      }, 4800);
     }
   }
   /* finger-sweep magic: flames panic near her finger, then turn into stars */
