@@ -52,13 +52,19 @@
       <div class="emo">📂</div>
       <div class="num gold" id="n-open">…</div>
       <div class="lbl">Times opened</div>
-      <div class="sub">how many times the page was opened, in total</div>
+      <div class="sub" id="s-open">every open, in total</div>
+    </div>
+    <div class="card">
+      <div class="emo">📱</div>
+      <div class="num" style="color:#7C8FC4" id="n-dev">…</div>
+      <div class="lbl">Unique devices</div>
+      <div class="sub" id="s-dev">distinct phones / browsers</div>
     </div>
     <div class="card">
       <div class="emo">🎂</div>
       <div class="num coral" id="n-wish">…</div>
       <div class="lbl">Reached the wish</div>
-      <div class="sub">blew out the candles &amp; saw the celebration</div>
+      <div class="sub">blew out the candles &amp; saw the end</div>
     </div>
   </div>
 
@@ -67,8 +73,8 @@
   <button class="btn" id="refresh">↻ Refresh</button>
 
   <div class="note">
-    <p><b>What these mean:</b> “Times opened” counts every time the link is opened in a browser — including your own previews. If it keeps climbing after you send it, she’s opening it. “Reached the wish” means someone made it all the way through and blew out the candles.</p>
-    <p style="margin-top:.7rem"><b>What this can’t show:</b> exact times, or telling her phone from another phone. If you want a real timeline (each open with date/time) and unique-vs-returning devices, that needs a proper analytics account — ask me to set up GoatCounter.</p>
+    <p><b>How to read it:</b> <b>Times opened</b> = every open in total (your previews included). <b>Unique devices</b> = how many different phones/browsers opened it — so “opened 6 times · 2 devices” means it was opened 6 times but only from 2 devices (someone came back). <b>Reached the wish</b> = made it all the way through and blew out the candles.</p>
+    <p style="margin-top:.7rem"><b>The limit:</b> it counts devices, not people — it can’t promise “her phone” vs. “a friend’s phone,” and it has no exact-time timeline. For a full timeline with dates/times, ask me to set up GoatCounter (free, your account).</p>
   </div>
 
 <script>
@@ -80,9 +86,16 @@
   }
   function load(){
     var err = document.getElementById("err");
-    Promise.all([get("open"), get("wish")]).then(function(v){
-      document.getElementById("n-open").textContent = v[0];
-      document.getElementById("n-wish").textContent = v[1];
+    Promise.all([get("o"), get("d"), get("w")]).then(function(v){
+      var opens = v[0], devs = v[1], wish = v[2];
+      document.getElementById("n-open").textContent = opens;
+      document.getElementById("n-dev").textContent = devs;
+      document.getElementById("n-wish").textContent = wish;
+      var repeats = Math.max(0, opens - devs);
+      document.getElementById("s-open").textContent = repeats > 0
+        ? repeats + " of them were repeat visits" : "every open, in total";
+      document.getElementById("s-dev").textContent = devs === 1
+        ? "one device so far" : "distinct phones / browsers";
       var now = new Date();
       document.getElementById("meta").textContent = "Updated " + now.toLocaleString();
       err.hidden = true;

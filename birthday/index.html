@@ -549,12 +549,19 @@
   var finePointer = matchMedia("(pointer: fine)").matches;
   var DPR = Math.min(devicePixelRatio || 1, 2);
 
-  /* silent open/finish counter (privacy-light: just event tallies, no personal data) */
+  /* silent counter (privacy-light: anonymous tallies only, no personal data, no IP) */
   var COUNTER_NS = "zeina-ze1a-k7q2x";
   function ping(key){
     try { var i = new Image(); i.src = "https://abacus.jasoncameron.dev/hit/" + COUNTER_NS + "/" + key + "?_=" + Date.now(); } catch(e){}
   }
-  ping("open");
+  /* count a distinct browser/device only once (like a unique-visitor tally) */
+  try {
+    if (!localStorage.getItem("zeina_dev")){
+      localStorage.setItem("zeina_dev", Date.now().toString(36) + Math.random().toString(36).slice(2));
+      ping("d");
+    }
+  } catch(e){}
+  ping("o");
 
   function show(from, to, after){
     from.hidden = true;
@@ -963,7 +970,7 @@
         hint.textContent = "Sakri 3younek w etmanni umniye… ✨";
         dim.classList.add("on");
       }, 1400);
-      ping("wish");
+      ping("w");
       setTimeout(function(){
         dim.classList.remove("on");
         show(cakeScene, party, celebrate);
