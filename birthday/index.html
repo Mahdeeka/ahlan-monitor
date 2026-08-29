@@ -360,6 +360,26 @@
   }
   @keyframes wordup{ 0%{ opacity:0; transform:translate(-50%,0) scale(.6);} 12%{ opacity:1; transform:translate(-50%,-10px) scale(1);} 80%{ opacity:1;} 100%{ opacity:0; transform:translate(-50%,-64px) scale(.95);} }
 
+  /* tap guide: bouncing hand that always marks the next action */
+  #hand{
+    position:absolute; z-index:65; pointer-events:none;
+    display:flex; flex-direction:column; align-items:center; gap:.1rem;
+    transform:translateX(-50%);
+    transition:top .45s ease, left .45s ease;
+  }
+  #hand .fing{ font-size:1.7rem; animation:handbounce 1s ease-in-out infinite; filter:drop-shadow(0 4px 8px rgba(0,0,0,.5)); }
+  #hand .lbl{
+    font-family:var(--body); font-weight:800; font-size:.8rem;
+    background:var(--gold); color:var(--night); border-radius:999px; padding:.3rem .8rem;
+    box-shadow:0 8px 18px rgba(0,0,0,.4); white-space:nowrap;
+  }
+  @keyframes handbounce{ 0%,100%{ transform:translateY(0);} 50%{ transform:translateY(-9px);} }
+  .cta-pulse{ animation:ctapulse 1.5s ease-in-out infinite; }
+  @keyframes ctapulse{
+    0%,100%{ box-shadow:0 0 0 0 rgba(232,184,75,.55); }
+    50%{ box-shadow:0 0 0 14px rgba(232,184,75,0); }
+  }
+
   .toolbar{ display:flex; gap:.8rem; flex-wrap:wrap; justify-content:center; }
   .ps{ font-family:var(--body); font-weight:600; font-size:.95rem; color:var(--sky-dim); text-align:center; line-height:1.8; }
 
@@ -379,6 +399,7 @@
 <canvas id="stars"></canvas>
 <canvas id="fx"></canvas>
 <button class="music-fab" id="music" aria-label="Music on or off">♪ el musi2a</button>
+<div id="hand" hidden aria-hidden="true"><span class="fing">👆</span><span class="lbl">duggi hon</span></div>
 
 <!-- ============ ACT I ============ -->
 <main class="scene" id="gate">
@@ -639,6 +660,26 @@
     pump();
   }
 
+  /* ============ tap guide: hand always marks the next action ============ */
+  var hand = document.getElementById("hand"), guideTarget = null;
+  function placeHand(){
+    if (!guideTarget || guideTarget.offsetParent === null && !guideTarget.getBoundingClientRect().height){ return; }
+    var r = guideTarget.getBoundingClientRect();
+    hand.style.left = (r.left + r.width / 2 + scrollX) + "px";
+    hand.style.top = (r.bottom + scrollY + 8) + "px";
+  }
+  function guideTo(el, label){
+    if (guideTarget && guideTarget.classList) guideTarget.classList.remove("cta-pulse");
+    guideTarget = el;
+    if (!el){ hand.hidden = true; return; }
+    hand.querySelector(".lbl").textContent = label || "duggi hon";
+    if (el.classList && el.tagName !== "g") el.classList.add("cta-pulse");
+    hand.hidden = false;
+    placeHand();
+  }
+  setInterval(function(){ if (!hand.hidden) placeHand(); }, 500);
+  addEventListener("resize", function(){ if (!hand.hidden) placeHand(); });
+
   /* ============ music box: loops once started ============ */
   var actx = null, musicOn = false, loopTimer = null, musicBtn = document.getElementById("music");
   var MELODY = [
@@ -724,8 +765,12 @@
     startMusic(); /* user gesture — audio allowed; keeps looping from here on */
     stub.classList.add("torn");
     setTimeout(function(){ pass.classList.add("depart"); }, reduced ? 0 : 250);
+    guideTo(null);
     setTimeout(function(){
-      show(gate, flightScene, startFlight);
+      show(gate, flightScene, function(){
+        startFlight();
+        guideTo(document.getElementById("to-cake"), "ba3den duggi hon");
+      });
     }, reduced ? 0 : 1050);
   }
   stub.addEventListener("pointerdown", function(e){ dragY = e.clientY; });
@@ -810,6 +855,7 @@
     if (flightDone) return; flightDone = true;
     clearTimeout(paTimer); clearInterval(slideTimer);
     show(flightScene, cakeScene);
+    guideTo(document.getElementById("blow"), "emsiki hon w onfo5i");
   });
 
   /* ============ ACT III: SVG cake ============ */
@@ -873,6 +919,7 @@
     wind(r.left + r.width / 2, r.top + 10);
     if (++out === CANDLES){
       document.getElementById("hint").textContent = "El umniye et7ajazet ✓";
+      guideTo(null);
       setTimeout(function(){ show(cakeScene, party, celebrate); }, 900);
     }
   }
@@ -925,6 +972,14 @@
       if (Date.now() < until) fwTimer = setTimeout(volley, 500 + Math.random() * 900);
     })();
   }
+  var flippedOnce = false, scratchDone = false;
+  function guideNextParty(){
+    if (!flippedOnce){ guideTo(postcard, "duggi la te2ra el risale"); return; }
+    var slot = document.querySelector(".slot:not(.stamped)");
+    if (slot){ guideTo(slot, "e5etmi el amniyat"); return; }
+    if (!scratchDone){ guideTo(document.getElementById("scratch"), "e7ki hon bi esba3ek"); return; }
+    guideTo(null);
+  }
   function celebrate(){
     document.getElementById("headline").classList.add("on");
     document.getElementById("arabic").classList.add("on");
@@ -932,6 +987,7 @@
     fireworksShow(14);
     startBalloons();
     initScratch();
+    setTimeout(guideNextParty, 1600);
   }
   document.getElementById("more-fx").addEventListener("click", function(){
     clearTimeout(fwTimer); confettiBurst(); fireworksShow(6);
@@ -981,7 +1037,13 @@
 
   /* postcard flip */
   var flip = document.getElementById("flip"), postcard = document.getElementById("postcard");
-  function doFlip(){ flip.classList.toggle("flipped"); }
+  function doFlip(){
+    flip.classList.toggle("flipped");
+    if (!flippedOnce && flip.classList.contains("flipped")){
+      flippedOnce = true;
+      setTimeout(guideNextParty, 1400);
+    }
+  }
   postcard.addEventListener("click", doFlip);
   postcard.addEventListener("keydown", function(e){ if (e.key === "Enter" || e.key === " "){ e.preventDefault(); doFlip(); } });
 
@@ -1004,12 +1066,12 @@
       var r = slot.getBoundingClientRect();
       for (var i = 0; i < 6; i++) sparkleAt(r.left + Math.random() * r.width, r.top + Math.random() * r.height);
       if (document.querySelectorAll(".slot.stamped").length === WISHES.length){ confettiBurst(); }
+      guideNextParty();
     });
     stampsBox.appendChild(slot);
   });
 
   /* scratch gift card */
-  var scratchDone = false;
   function initScratch(){
     var cv = document.getElementById("scratch"), wrap = cv.parentElement;
     var w = wrap.clientWidth, h = wrap.clientHeight;
@@ -1038,12 +1100,16 @@
       for (var i = 3; i < img.length; i += 64){ total++; if (img[i] === 0) clear++; }
       if (clear / total > .45 && !scratchDone){
         scratchDone = true; cv.classList.add("done"); confettiBurst();
+        guideNextParty();
       }
     }
     cv.addEventListener("pointerdown", function(e){ scratching = true; cv.setPointerCapture(e.pointerId); scrub(e); });
     cv.addEventListener("pointermove", function(e){ if (scratching) scrub(e); });
     cv.addEventListener("pointerup", function(){ scratching = false; check(); });
   }
+
+  /* the journey starts at the stub */
+  guideTo(stub, "shiddi aw duggi hon");
 })();
 </script>
 </body>
