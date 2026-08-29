@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zeina Air · Dashboard</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,600;1,9..144,600&family=Space+Mono:wght@400;700&family=Karla:wght@400;600;800&display=swap">
+<style>
+  :root{
+    --night:#0B1026; --night-2:#141B3C; --card:#1A2144; --line:#2A3158;
+    --gold:#E8B84B; --coral:#F2789B; --text:#F9F4E6; --dim:#CDD5F2;
+    --display:"Fraunces",Georgia,serif; --mono:"Space Mono",monospace; --body:"Karla",Arial,sans-serif;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{
+    background:radial-gradient(120% 90% at 50% 0%, var(--night-2), var(--night) 62%) var(--night);
+    color:var(--text); font-family:var(--body); min-height:100vh;
+    padding:2rem 1.15rem 3rem; display:flex; flex-direction:column; align-items:center; gap:1.5rem;
+  }
+  .brand{ font-family:var(--mono); font-size:.72rem; letter-spacing:.28em; text-transform:uppercase; color:var(--gold); }
+  h1{ font-family:var(--display); font-style:italic; font-weight:600; font-size:1.9rem; text-align:center; text-wrap:balance; }
+  .cards{ display:flex; flex-wrap:wrap; gap:1rem; justify-content:center; width:min(560px,100%); }
+  .card{
+    flex:1 1 200px; background:var(--card); border:1px solid var(--line); border-radius:16px;
+    padding:1.4rem 1.3rem; text-align:center;
+  }
+  .card .emo{ font-size:1.8rem; }
+  .num{ font-family:var(--display); font-weight:600; font-size:3.4rem; line-height:1; margin:.4rem 0 .2rem; font-variant-numeric:tabular-nums; }
+  .num.gold{ color:var(--gold); } .num.coral{ color:var(--coral); }
+  .card .lbl{ font-weight:800; font-size:1.02rem; }
+  .card .sub{ font-family:var(--mono); font-size:.68rem; color:var(--dim); margin-top:.35rem; line-height:1.5; }
+  .meta{ font-family:var(--mono); font-size:.72rem; color:var(--dim); text-align:center; }
+  .btn{
+    font-family:var(--body); font-weight:800; font-size:.95rem; color:var(--night); background:var(--gold);
+    border:none; border-radius:999px; padding:.8rem 1.8rem; cursor:pointer;
+  }
+  .note{
+    width:min(560px,100%); background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:1.15rem 1.25rem; font-size:.95rem; line-height:1.65; color:var(--dim);
+  }
+  .note b{ color:var(--text); }
+  .err{ color:var(--coral); font-family:var(--mono); font-size:.8rem; text-align:center; }
+  a{ color:var(--gold); }
+</style>
+</head>
+<body>
+  <div class="brand">Zeina Air ✈ · private dashboard</div>
+  <h1>Did she open it?</h1>
+
+  <div class="cards">
+    <div class="card">
+      <div class="emo">📂</div>
+      <div class="num gold" id="n-open">…</div>
+      <div class="lbl">Times opened</div>
+      <div class="sub">how many times the page was opened, in total</div>
+    </div>
+    <div class="card">
+      <div class="emo">🎂</div>
+      <div class="num coral" id="n-wish">…</div>
+      <div class="lbl">Reached the wish</div>
+      <div class="sub">blew out the candles &amp; saw the celebration</div>
+    </div>
+  </div>
+
+  <p class="meta" id="meta">Loading…</p>
+  <p class="err" id="err" hidden></p>
+  <button class="btn" id="refresh">↻ Refresh</button>
+
+  <div class="note">
+    <p><b>What these mean:</b> “Times opened” counts every time the link is opened in a browser — including your own previews. If it keeps climbing after you send it, she’s opening it. “Reached the wish” means someone made it all the way through and blew out the candles.</p>
+    <p style="margin-top:.7rem"><b>What this can’t show:</b> exact times, or telling her phone from another phone. If you want a real timeline (each open with date/time) and unique-vs-returning devices, that needs a proper analytics account — ask me to set up GoatCounter.</p>
+  </div>
+
+<script>
+  var NS = "zeina-ze1a-k7q2x";
+  function get(key){
+    return fetch("https://abacus.jasoncameron.dev/get/" + NS + "/" + key + "?_=" + Date.now())
+      .then(function(r){ return r.json(); })
+      .then(function(d){ return (d && typeof d.value === "number") ? d.value : 0; });
+  }
+  function load(){
+    var err = document.getElementById("err");
+    Promise.all([get("open"), get("wish")]).then(function(v){
+      document.getElementById("n-open").textContent = v[0];
+      document.getElementById("n-wish").textContent = v[1];
+      var now = new Date();
+      document.getElementById("meta").textContent = "Updated " + now.toLocaleString();
+      err.hidden = true;
+    }).catch(function(){
+      err.hidden = false;
+      err.textContent = "Couldn't reach the counter — check your connection and hit Refresh.";
+      document.getElementById("meta").textContent = "";
+    });
+  }
+  document.getElementById("refresh").addEventListener("click", load);
+  load();
+  setInterval(load, 20000);
+</script>
+</body>
+</html>
