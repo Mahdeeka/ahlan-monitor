@@ -558,10 +558,10 @@
   try {
     if (!localStorage.getItem("zeina_dev")){
       localStorage.setItem("zeina_dev", Date.now().toString(36) + Math.random().toString(36).slice(2));
-      ping("d");
+      ping("device");
     }
   } catch(e){}
-  ping("o");
+  ping("opened");
 
   function show(from, to, after){
     from.hidden = true;
@@ -970,7 +970,7 @@
         hint.textContent = "Sakri 3younek w etmanni umniye… ✨";
         dim.classList.add("on");
       }, 1400);
-      ping("w");
+      ping("wished");
       setTimeout(function(){
         dim.classList.remove("on");
         show(cakeScene, party, celebrate);
