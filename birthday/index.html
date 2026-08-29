@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flight ZE·1A</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500;1,9..144,700&family=Space+Mono:wght@400;700&family=Karla:ital,wght@0,400;0,600;1,400&family=Amiri:ital@0;1&display=swap">
+<style>
+  :root{
+    --night:#0B1026;
+    --night-2:#141B3C;
+    --card:#F5EEDC;
+    --card-shade:#E9DFC6;
+    --ink:#1E2440;
+    --ink-soft:#585F82;
+    --gold:#E8B84B;
+    --gold-deep:#C4922B;
+    --coral:#F2789B;
+    --sky-text:#F5EEDC;
+    --sky-dim:#9AA3C7;
+    --display:"Fraunces", Georgia, serif;
+    --mono:"Space Mono", "Courier New", monospace;
+    --body:"Karla", "Helvetica Neue", Arial, sans-serif;
+    --arabic:"Amiri", "Times New Roman", serif;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html{ background:var(--night); }
+  body{
+    background:radial-gradient(120% 90% at 50% 0%, var(--night-2) 0%, var(--night) 60%) fixed var(--night);
+    color:var(--sky-text);
+    font-family:var(--body);
+    min-height:100svh;
+    overflow-x:hidden;
+  }
+  button{ font:inherit; cursor:pointer; }
+  button:focus-visible, .candle:focus-visible{ outline:2px solid var(--gold); outline-offset:3px; }
+
+  #stars{ position:fixed; inset:0; z-index:0; pointer-events:none; }
+  #confetti{ position:fixed; inset:0; z-index:50; pointer-events:none; }
+
+  .scene{
+    position:relative; z-index:1;
+    min-height:100svh;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:2rem; padding:3rem 1.25rem;
+  }
+  [hidden]{ display:none !important; }
+
+  /* ---------- Scene 1 · boarding pass ---------- */
+  .kicker{
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.32em;
+    text-transform:uppercase; color:var(--gold); text-align:center;
+  }
+  .kicker small{ display:block; margin-top:.55rem; color:var(--sky-dim); letter-spacing:.18em; }
+
+  .pass{
+    width:min(430px, 100%);
+    background:var(--card); color:var(--ink);
+    border-radius:14px;
+    box-shadow:0 30px 60px rgba(0,0,0,.45), 0 2px 0 rgba(255,255,255,.06);
+    overflow:hidden;
+    transition:transform .8s cubic-bezier(.5,-.3,.7,1), opacity .7s ease;
+  }
+  .pass.depart{ transform:translateY(-120vh) rotate(-7deg); opacity:0; }
+
+  .pass-top{
+    display:flex; justify-content:space-between; align-items:center;
+    background:var(--ink); color:var(--card);
+    padding:.8rem 1.2rem;
+    font-family:var(--mono); font-size:.7rem; letter-spacing:.14em; text-transform:uppercase;
+  }
+  .pass-top .plane{ color:var(--gold); font-size:.95rem; letter-spacing:0; }
+
+  .pass-main{ padding:1.15rem 1.2rem .9rem; }
+  .route{
+    display:flex; align-items:center; justify-content:space-between; gap:.6rem;
+    margin-bottom:1.1rem;
+  }
+  .route .code{ font-family:var(--display); font-weight:600; font-size:2.15rem; line-height:1; }
+  .route .place{ font-family:var(--mono); font-size:.6rem; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-soft); margin-top:.4rem; max-width:9.5em; }
+  .route .to{ text-align:right; }
+  .route .to .place{ margin-left:auto; }
+  .route-line{ flex:1; display:flex; align-items:center; gap:.35rem; color:var(--gold-deep); }
+  .route-line::before,.route-line::after{ content:""; flex:1; border-top:2px dashed var(--gold-deep); opacity:.55; }
+
+  .fields{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:.85rem .5rem;
+    border-top:1px solid var(--card-shade); padding-top:1rem;
+  }
+  .field dt{ font-family:var(--mono); font-size:.56rem; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:.25rem; }
+  .field dd{ font-family:var(--mono); font-weight:700; font-size:.82rem; }
+  .field.wide{ grid-column:span 3; }
+  .field.wide dd{ font-family:var(--display); font-style:italic; font-weight:500; font-size:1.15rem; }
+
+  .stamp{
+    margin:1.05rem 0 .2rem;
+    display:inline-block;
+    font-family:var(--mono); font-size:.62rem; font-weight:700; letter-spacing:.2em; text-transform:uppercase;
+    color:var(--coral); border:2px solid var(--coral); border-radius:6px;
+    padding:.4rem .7rem; transform:rotate(-3deg);
+    mask-image:radial-gradient(circle at 30% 60%, #000 92%, transparent 95%);
+  }
+
+  .tear{
+    position:relative; border-top:2px dashed #C9BC9C;
+    background:var(--card-shade); padding:.95rem 1.2rem 1.1rem;
+  }
+  .tear::before,.tear::after{
+    content:""; position:absolute; top:-11px; width:20px; height:20px; border-radius:50%;
+    background:var(--night);
+  }
+  .tear::before{ left:-11px; } .tear::after{ right:-11px; }
+  .barcode{
+    height:40px; margin-bottom:.9rem;
+    background:repeating-linear-gradient(90deg,
+      var(--ink) 0 2px, transparent 2px 5px, var(--ink) 5px 8px, transparent 8px 10px,
+      var(--ink) 10px 11px, transparent 11px 15px, var(--ink) 15px 19px, transparent 19px 21px);
+    opacity:.85;
+  }
+  .board-btn{
+    width:100%; border:none; border-radius:9px;
+    background:var(--ink); color:var(--gold);
+    font-family:var(--mono); font-weight:700; font-size:.8rem; letter-spacing:.22em; text-transform:uppercase;
+    padding:1rem; transition:transform .15s ease, background .15s ease;
+  }
+  .board-btn:hover{ background:#2A3158; transform:translateY(-1px); }
+
+  #plane-fly{
+    position:fixed; z-index:40; left:-14vw; top:52vh;
+    font-size:2.4rem; opacity:0; pointer-events:none;
+  }
+  #plane-fly.go{ animation:fly 1.9s cubic-bezier(.35,.1,.45,1) forwards; }
+  @keyframes fly{
+    0%{ opacity:0; transform:translate(0,0) rotate(8deg); }
+    12%{ opacity:1; }
+    88%{ opacity:1; }
+    100%{ opacity:0; transform:translate(128vw,-38vh) rotate(-14deg); }
+  }
+
+  /* ---------- Scene 2 · landing ---------- */
+  #land{ opacity:0; transition:opacity 1s ease; }
+  #land.arrived{ opacity:1; }
+
+  .arrive-note{
+    font-family:var(--mono); font-size:.68rem; letter-spacing:.3em; text-transform:uppercase;
+    color:var(--sky-dim); text-align:center;
+  }
+  .arrive-note b{ color:var(--gold); font-weight:400; }
+
+  .cake-zone{ display:flex; flex-direction:column; align-items:center; gap:1.4rem; }
+  .cake{ position:relative; width:250px; height:210px; }
+  .candles{ position:absolute; left:0; right:0; top:0; display:flex; justify-content:center; gap:26px; }
+  .candle{
+    position:relative; width:12px; height:56px; border:none; padding:0;
+    background:repeating-linear-gradient(45deg, var(--card) 0 6px, var(--coral) 6px 12px);
+    border-radius:3px 3px 0 0;
+  }
+  .flame{
+    position:absolute; left:50%; top:-22px; transform:translateX(-50%);
+    width:14px; height:20px;
+    background:radial-gradient(circle at 50% 78%, #FFF3C4 0 28%, var(--gold) 55%, #E06A2B 100%);
+    border-radius:50% 50% 45% 45% / 62% 62% 38% 38%;
+    box-shadow:0 0 18px 6px rgba(232,184,75,.45);
+    transform-origin:50% 100%;
+    animation:flicker 1s ease-in-out infinite alternate;
+  }
+  @keyframes flicker{
+    from{ transform:translateX(-50%) scale(1) rotate(-2deg); }
+    to{ transform:translateX(-50%) scale(.9) rotate(3deg); }
+  }
+  .candle.out .flame{ display:none; }
+  .candle.out::after{
+    content:"~"; position:absolute; top:-24px; left:50%; transform:translateX(-50%);
+    color:var(--sky-dim); font-size:1rem; animation:smoke 1.6s ease-out forwards;
+  }
+  @keyframes smoke{
+    from{ opacity:.9; transform:translate(-50%,0); }
+    to{ opacity:0; transform:translate(-50%,-26px) rotate(20deg); }
+  }
+  .tier{ position:absolute; left:50%; transform:translateX(-50%); border-radius:10px 10px 6px 6px; }
+  .tier.t1{ top:56px; width:150px; height:60px; background:linear-gradient(180deg, var(--coral) 0 34%, #D95F84 34% 42%, var(--card) 42%); }
+  .tier.t2{ top:112px; width:214px; height:64px; background:linear-gradient(180deg, var(--gold) 0 32%, var(--gold-deep) 32% 40%, var(--card) 40%); }
+  .plate{ position:absolute; top:174px; left:50%; transform:translateX(-50%); width:250px; height:14px; border-radius:50%; background:#2A3158; }
+
+  .hint{ font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase; color:var(--sky-dim); }
+
+  /* ---------- the message ---------- */
+  #wish{ text-align:center; max-width:34rem; display:flex; flex-direction:column; align-items:center; gap:1.3rem; opacity:0; transform:translateY(14px); transition:opacity .9s ease .15s, transform .9s ease .15s; }
+  #wish.show{ opacity:1; transform:none; }
+  .big{
+    font-family:var(--display); font-style:italic; font-weight:700;
+    font-size:clamp(2.4rem, 9vw, 3.9rem); line-height:1.05; text-wrap:balance;
+    color:var(--card);
+  }
+  .big em{ color:var(--gold); font-style:inherit; }
+  .arabic{
+    font-family:var(--arabic); font-size:clamp(1.35rem, 5vw, 1.8rem);
+    color:var(--coral); direction:rtl;
+  }
+  .letter{
+    background:var(--card); color:var(--ink);
+    border-radius:12px; padding:1.4rem 1.6rem;
+    box-shadow:0 22px 45px rgba(0,0,0,.4);
+    font-size:1.02rem; line-height:1.65; text-align:left;
+    max-width:30rem;
+  }
+  .letter p+p{ margin-top:.8rem; }
+  .letter .sig{ font-family:var(--display); font-style:italic; font-size:1.15rem; color:var(--gold-deep); }
+  .ps{ font-family:var(--mono); font-size:.7rem; letter-spacing:.16em; text-transform:uppercase; color:var(--sky-dim); }
+
+  @media (prefers-reduced-motion: reduce){
+    .flame,.pass,#plane-fly.go,.candle.out::after{ animation:none !important; transition:none !important; }
+    .pass.depart{ display:none; }
+    #land{ transition:none; } #wish{ transition:none; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="stars"></canvas>
+<canvas id="confetti"></canvas>
+<div id="plane-fly" aria-hidden="true">✈️</div>
+
+<!-- Scene 1 -->
+<main class="scene" id="gate">
+  <p class="kicker">Zeina Air · Now Boarding<small>one very important passenger</small></p>
+
+  <section class="pass" id="pass" aria-label="Boarding pass for Zeina">
+    <div class="pass-top">
+      <span>Boarding Pass</span>
+      <span class="plane">✈</span>
+      <span>First Class</span>
+    </div>
+
+    <div class="pass-main">
+      <div class="route">
+        <div class="from">
+          <div class="code">LIFE</div>
+          <div class="place">Everyday routine</div>
+        </div>
+        <div class="route-line">✈</div>
+        <div class="to">
+          <div class="code">BDAY</div>
+          <div class="place">Another amazing year</div>
+        </div>
+      </div>
+
+      <dl class="fields">
+        <div class="field wide"><dt>Passenger</dt><dd>Zeina Ighbaryeh</dd></div>
+        <div class="field"><dt>Flight</dt><dd>ZE·001</dd></div>
+        <div class="field"><dt>Seat</dt><dd>1A</dd></div>
+        <div class="field"><dt>Gate</dt><dd>🎂</dd></div>
+        <div class="field"><dt>Date</dt><dd>Today</dd></div>
+        <div class="field"><dt>Departs</dt><dd>Right now</dd></div>
+        <div class="field"><dt>Baggage</dt><dd>Good vibes</dd></div>
+      </dl>
+
+      <span class="stamp">Cleared for celebration</span>
+    </div>
+
+    <div class="tear">
+      <div class="barcode" aria-hidden="true"></div>
+      <button class="board-btn" id="board">Board this flight →</button>
+    </div>
+  </section>
+</main>
+
+<!-- Scene 2 -->
+<main class="scene" id="land" hidden>
+  <p class="arrive-note">You have arrived at <b>Gate 🎂</b> · local mood: festive</p>
+
+  <div class="cake-zone" id="cake-zone">
+    <div class="cake" role="group" aria-label="Birthday cake with candles">
+      <div class="candles" id="candles"></div>
+      <div class="tier t1"></div>
+      <div class="tier t2"></div>
+      <div class="plate"></div>
+    </div>
+    <p class="hint" id="hint">Make a wish — tap the candles to blow them out</p>
+  </div>
+
+  <section id="wish" hidden>
+    <h1 class="big">Happy Birthday, <em>Zeina</em></h1>
+    <p class="arabic">كل عام وإنتِ بخير يا زينة 🤍</p>
+    <div class="letter">
+      <p>Wishing you a year as bright as every city you've wandered and every
+         photo you've made look effortless. May it be full of new stamps in your
+         passport, good people, good food, and even better stories.</p>
+      <p>Stay exactly as you are — the world clearly agrees with you.</p>
+      <p class="sig">— with love, from your friend</p>
+    </div>
+    <p class="ps">P.S. Seat 1A is yours all year. Enjoy the flight.</p>
+  </section>
+</main>
+
+<script>
+(function(){
+  "use strict";
+  var reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---- starfield ---- */
+  var sky = document.getElementById("stars"), sctx = sky.getContext("2d"), stars = [];
+  function seedStars(){
+    sky.width = innerWidth * devicePixelRatio; sky.height = innerHeight * devicePixelRatio;
+    stars = [];
+    var n = Math.floor(innerWidth * innerHeight / 5200);
+    for (var i = 0; i < n; i++) stars.push({
+      x: Math.random() * sky.width, y: Math.random() * sky.height,
+      r: (Math.random() * 1.3 + .4) * devicePixelRatio,
+      p: Math.random() * Math.PI * 2, s: .4 + Math.random() * 1.4
+    });
+  }
+  function drawStars(t){
+    sctx.clearRect(0, 0, sky.width, sky.height);
+    for (var i = 0; i < stars.length; i++){
+      var st = stars[i];
+      var a = reduced ? .7 : .35 + .45 * (0.5 + 0.5 * Math.sin(st.p + t / 1000 * st.s));
+      sctx.globalAlpha = a; sctx.fillStyle = "#F5EEDC";
+      sctx.beginPath(); sctx.arc(st.x, st.y, st.r, 0, 7); sctx.fill();
+    }
+    sctx.globalAlpha = 1;
+    if (!reduced) requestAnimationFrame(drawStars);
+  }
+  seedStars(); requestAnimationFrame(drawStars);
+  addEventListener("resize", function(){ seedStars(); if (reduced) drawStars(0); });
+
+  /* ---- boarding ---- */
+  var gate = document.getElementById("gate"), land = document.getElementById("land"),
+      pass = document.getElementById("pass"), plane = document.getElementById("plane-fly");
+
+  document.getElementById("board").addEventListener("click", function(){
+    this.disabled = true;
+    pass.classList.add("depart");
+    if (!reduced) plane.classList.add("go");
+    setTimeout(function(){
+      gate.hidden = true; land.hidden = false;
+      requestAnimationFrame(function(){ land.classList.add("arrived"); });
+    }, reduced ? 0 : 1300);
+  });
+
+  /* ---- candles ---- */
+  var CANDLES = 5, out = 0;
+  var row = document.getElementById("candles");
+  for (var c = 0; c < CANDLES; c++){
+    var b = document.createElement("button");
+    b.className = "candle";
+    b.setAttribute("aria-label", "Blow out candle " + (c + 1));
+    b.innerHTML = '<span class="flame" aria-hidden="true"></span>';
+    b.addEventListener("click", function(){
+      if (this.classList.contains("out")) return;
+      this.classList.add("out");
+      this.setAttribute("aria-label", "Candle out");
+      if (++out === CANDLES) celebrate();
+    });
+    row.appendChild(b);
+  }
+
+  /* ---- confetti ---- */
+  var cv = document.getElementById("confetti"), ctx = cv.getContext("2d"),
+      bits = [], COLORS = ["#E8B84B", "#F2789B", "#F5EEDC", "#7C8FC4", "#C4922B"];
+  function burst(){
+    cv.width = innerWidth * devicePixelRatio; cv.height = innerHeight * devicePixelRatio;
+    for (var i = 0; i < 170; i++) bits.push({
+      x: cv.width / 2, y: cv.height * .45,
+      vx: (Math.random() - .5) * 16 * devicePixelRatio,
+      vy: (Math.random() * -13 - 4) * devicePixelRatio,
+      w: (4 + Math.random() * 5) * devicePixelRatio,
+      h: (6 + Math.random() * 6) * devicePixelRatio,
+      c: COLORS[i % COLORS.length],
+      a: Math.random() * Math.PI * 2, av: (Math.random() - .5) * .3
+    });
+    tick();
+  }
+  function tick(){
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    bits = bits.filter(function(p){ return p.y < cv.height + 40; });
+    bits.forEach(function(p){
+      p.vy += .32 * devicePixelRatio; p.x += p.vx; p.y += p.vy; p.a += p.av;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a);
+      ctx.fillStyle = p.c; ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    });
+    if (bits.length) requestAnimationFrame(tick);
+  }
+
+  function celebrate(){
+    document.getElementById("hint").textContent = "Wish locked in ✓";
+    var wish = document.getElementById("wish");
+    wish.hidden = false;
+    requestAnimationFrame(function(){ wish.classList.add("show"); });
+    if (!reduced){ burst(); setTimeout(burst, 700); }
+    setTimeout(function(){ wish.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "center" }); }, 400);
+  }
+})();
+</script>
+</body>
+</html>
