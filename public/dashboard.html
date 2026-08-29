@@ -86,7 +86,7 @@
   }
   function load(){
     var err = document.getElementById("err");
-    Promise.all([get("o"), get("d"), get("w")]).then(function(v){
+    Promise.all([get("opened"), get("device"), get("wished")]).then(function(v){
       var opens = v[0], devs = v[1], wish = v[2];
       document.getElementById("n-open").textContent = opens;
       document.getElementById("n-dev").textContent = devs;
