@@ -2,6 +2,12 @@ name: birthday-pages
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - claude/birthday-website-creative-kc5fvs
+    paths:
+      - public/zeina.html
+      - .github/workflows/birthday-pages.yml
 
 permissions:
   contents: read
