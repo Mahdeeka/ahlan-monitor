@@ -215,6 +215,14 @@
     transform:translateY(12px) scale(.96); transition:transform .8s ease; line-height:1.35;
   }
   #dim.on .wishmsg{ transform:none; }
+  #dim .dots{ display:flex; gap:.55rem; justify-content:center; margin-top:1.4rem; }
+  #dim .dots span{
+    width:11px; height:11px; border-radius:50%; background:var(--gold);
+    animation:dotpulse 1.2s ease-in-out infinite;
+  }
+  #dim .dots span:nth-child(2){ animation-delay:.2s; }
+  #dim .dots span:nth-child(3){ animation-delay:.4s; }
+  @keyframes dotpulse{ 0%,100%{ transform:scale(.5); opacity:.35; } 50%{ transform:scale(1); opacity:1; } }
   #cake-svg .candle-hit{ cursor:pointer; }
   .flamegrp{ transform-origin:center bottom; transform-box:fill-box; animation:flick 0.9s ease-in-out infinite alternate; }
   .flamegrp:nth-child(odd){ animation-duration:1.15s; }
@@ -411,7 +419,7 @@
 <canvas id="fx"></canvas>
 <button class="music-fab" id="music" aria-label="Music on or off">♪ el musi2a</button>
 <div id="hand" hidden aria-hidden="true"><span class="fing">👆</span><span class="lbl">duggi hon</span></div>
-<div id="dim" aria-hidden="true"><div class="wishmsg" id="wishmsg"></div></div>
+<div id="dim" aria-hidden="true"><div><div class="wishmsg" id="wishmsg"></div><div class="dots"><span></span><span></span><span></span></div></div></div>
 
 <!-- ============ ACT I ============ -->
 <main class="scene" id="gate">
