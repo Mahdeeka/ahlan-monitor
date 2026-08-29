@@ -556,8 +556,8 @@
   }
   /* count a distinct browser/device only once (like a unique-visitor tally) */
   try {
-    if (!localStorage.getItem("zeina_dev")){
-      localStorage.setItem("zeina_dev", Date.now().toString(36) + Math.random().toString(36).slice(2));
+    if (!localStorage.getItem("zeina_dev2")){
+      localStorage.setItem("zeina_dev2", Date.now().toString(36) + Math.random().toString(36).slice(2));
       ping("device");
     }
   } catch(e){}
