@@ -663,22 +663,39 @@
     var dur = playSong();
     loopTimer = setTimeout(loopSong, (dur + 1.4) * 1000);
   }
+  var userStopped = false;
+  function reallyStart(){
+    if (musicOn) return;
+    musicOn = true;
+    musicBtn.textContent = "♪ el musi2a: on";
+    loopSong();
+  }
   function startMusic(){
+    if (musicOn || userStopped) return;
     try {
       if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
-      if (actx.state === "suspended") actx.resume();
-      musicOn = true;
-      musicBtn.textContent = "♪ el musi2a: on";
-      loopSong();
+      if (actx.state === "running"){ reallyStart(); return; }
+      var p = actx.resume();
+      if (p && p.then) p.then(function(){
+        if (actx && actx.state === "running") reallyStart();
+      }).catch(function(){});
     } catch(e){ /* audio unavailable — page still works */ }
   }
   function stopMusic(){
-    musicOn = false;
+    musicOn = false; userStopped = true;
     clearTimeout(loopTimer); loopTimer = null;
     if (actx){ try{ actx.close(); }catch(e){} actx = null; }
     musicBtn.textContent = "♪ el musi2a";
   }
-  musicBtn.addEventListener("click", function(){ musicOn ? stopMusic() : startMusic(); });
+  musicBtn.addEventListener("click", function(){
+    if (musicOn){ stopMusic(); } else { userStopped = false; startMusic(); }
+  });
+  /* try the moment the page opens (works when the browser allows autoplay)… */
+  startMusic();
+  /* …otherwise the very first touch/click/key anywhere starts it */
+  ["pointerdown", "touchend", "keydown"].forEach(function(ev){
+    addEventListener(ev, function firstGesture(){ startMusic(); }, { passive:true });
+  });
 
   /* ============ ACT I: tilt + sheen + tear ============ */
   var pass = document.getElementById("pass"), gate = document.getElementById("gate"),
