@@ -549,6 +549,13 @@
   var finePointer = matchMedia("(pointer: fine)").matches;
   var DPR = Math.min(devicePixelRatio || 1, 2);
 
+  /* silent open/finish counter (privacy-light: just event tallies, no personal data) */
+  var COUNTER_NS = "zeina-ze1a-k7q2x";
+  function ping(key){
+    try { var i = new Image(); i.src = "https://abacus.jasoncameron.dev/hit/" + COUNTER_NS + "/" + key + "?_=" + Date.now(); } catch(e){}
+  }
+  ping("open");
+
   function show(from, to, after){
     from.hidden = true;
     to.hidden = false;
@@ -956,6 +963,7 @@
         hint.textContent = "Sakri 3younek w etmanni umniye… ✨";
         dim.classList.add("on");
       }, 2300);
+      ping("wish");
       setTimeout(function(){
         dim.classList.remove("on");
         show(cakeScene, party, celebrate);
