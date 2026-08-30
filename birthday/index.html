@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flight ZE·1A</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@1,9..144,600&family=Space+Mono:wght@400;700&family=Karla:wght@400;600&display=swap">
+<style>
+  :root{
+    --night:#0B1026; --night-2:#141B3C; --gold:#E8B84B; --text:#F9F4E6; --dim:#CDD5F2;
+    --display:"Fraunces",Georgia,serif; --mono:"Space Mono",monospace; --body:"Karla",Arial,sans-serif;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{
+    background:radial-gradient(120% 90% at 50% 0%, var(--night-2), var(--night) 62%) var(--night);
+    color:var(--text); font-family:var(--body); min-height:100svh;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; gap:1.3rem; padding:2.5rem 1.5rem;
+  }
+  .plane{ font-size:2.6rem; opacity:.85; }
+  .brand{ font-family:var(--mono); font-size:.72rem; letter-spacing:.3em; text-transform:uppercase; color:var(--gold); }
+  h1{ font-family:var(--display); font-style:italic; font-weight:600; font-size:clamp(1.9rem,7vw,2.8rem); text-wrap:balance; }
+  p{ color:var(--dim); font-size:1.05rem; max-width:22rem; line-height:1.6; }
+  .stamp{
+    font-family:var(--mono); font-weight:700; font-size:.7rem; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--gold); border:2px solid var(--gold); border-radius:8px; padding:.5rem .9rem;
+    transform:rotate(-3deg); margin-top:.4rem; opacity:.9;
+  }
+</style>
+</head>
+<body>
+  <div class="plane">✈️</div>
+  <div class="brand">Boarding Pass</div>
+  <h1>This link has expired</h1>
+  <p>This boarding pass is no longer valid — the flight has already departed. 🎂</p>
+  <div class="stamp">Expired</div>
+</body>
+</html>
