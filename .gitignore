@@ -35,3 +35,6 @@ Thumbs.db
 
 # Chrome extension — never commit credentials
 chrome-extension/default_accounts.js
+
+# Reels editing scratch (raw footage, transcripts, intermediate renders)
+_reels_work/
